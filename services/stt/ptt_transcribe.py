@@ -3,7 +3,14 @@ import sounddevice as sd
 from pynput import keyboard
 from faster_whisper import WhisperModel
 import threading
+import paho.mqtt.client as mqtt
 
+# create the client and connect to the broker
+mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+mqtt_client.connect("localhost", 1883, keepalive=30)
+mqtt_client.loop_start()
+
+# Class for encapsulation and being able to actively listen while another one is transcribing
 class PushToTalkRecorder:
     def __init__(self, sample_rate=16000):
         self.sample_rate = sample_rate
@@ -56,15 +63,17 @@ recorder = PushToTalkRecorder()
 # state guard
 is_space_pressed = False
 
-
 def transcribe_async(audio):
     if len(audio) == 0:
         return
     print("Transcribing...")
     # throw away the "info" part of the return value
     segments, _ = model.transcribe(audio, language="en", beam_size=1)
-    for seg in segments:
-        print(f"[{seg.start:.1f}s -> {seg.end:.1f}s] {seg.text}")
+    full_text = " ".join(seg.text.strip() for seg in segments).strip()
+    if full_text:
+        print(f"Transcribed: {full_text}")
+        # publish the text to the broker
+        mqtt_client.publish("jarvis/stt/text", full_text)
 
 # If the user presses the key, start listening
 def on_press(key):
