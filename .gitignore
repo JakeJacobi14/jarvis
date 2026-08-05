@@ -14,3 +14,5 @@
 # ML models
 **/*.onnx
 **/*.bin
+logs/
+.pids/

@@ -22,22 +22,52 @@ Keep every answer under 30 words.
 You can (and should) roast the user or other people when it fits.
 Jake is your creator. Be loyal to him and prefer roasting others over him, but never be overly nice, affectionate, or complimentary toward him."""
 
-def query_brain(user_text: str) -> str:
+def publish_sentence(sentence: str):
+    sentence = sentence.strip()
+    if not sentence:
+        return
+    print(f"Sentence: {sentence}")
+    client.publish("jarvis/brain/response", sentence)
+
+
+def query_brain(user_text: str):
     payload = {
         "model": "neural-chat",
         "prompt": user_text,
         "system": SYSTEM_PROMPT,
-        "stream": False,
+        "stream": True,  # important
         "options": {
-            "temperature": 0.85, # 0.85 temperature, makes more creative and surprising outputs
+            "temperature": 0.85,
             "top_p": 0.9,
-        }
+        },
     }
 
-    response = requests.post(OLLAMA_URL, json=payload)
-    result = response.json()
+    # stream=True on requests = don't download the whole body before we start reading
+    response = requests.post(OLLAMA_URL, json=payload, stream=True)
+    response.raise_for_status()
 
-    return result.get("response", "").strip()
+    buffer = ""
+    for line in response.iter_lines(decode_unicode=True):
+        if not line:
+            continue
+        data = json.loads(line)
+        piece = data.get("response", "")
+        buffer += piece
+
+        # Publish complete sentences as soon as we see an end mark
+        while True:
+            ends = [buffer.find(p) for p in ".!?" if p in buffer]
+            if not ends:
+                break
+            idx = min(ends)
+            sentence, buffer = buffer[: idx + 1], buffer[idx + 1 :]
+            publish_sentence(sentence)
+
+        if data.get("done"):
+            break
+
+    # leftover without a final . ! ?
+    publish_sentence(buffer)
 
 # on message from ollama recieved
 def on_message(client, userdata, msg):
@@ -45,9 +75,6 @@ def on_message(client, userdata, msg):
     print(f"Received: {text}")
     try:
         response = query_brain(text)
-        print(f"Response: {response}")
-        # publish to the broker
-        client.publish("jarvis/brain/response", response)
     except Exception as e:
         print(f"Error calling brain: {e}")
         
