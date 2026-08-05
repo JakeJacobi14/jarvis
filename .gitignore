@@ -1,0 +1,16 @@
+# Python virtual environments
+**/.venv/
+
+# Python cache
+**/__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Audio files
+*.wav
+
+# ML models
+**/*.onnx
+**/*.bin
