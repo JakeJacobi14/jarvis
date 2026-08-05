@@ -29,7 +29,7 @@ We are **not** building one monolithic script. Each stage of the pipeline is an 
 | `mic-wakeword` | Always-listening wake word detection ("Hey Jarvis") | **Picovoice Porcupine** (or openWakeWord as free/OSS fallback) |
 | `stt` | Streams speech → text after wake word fires, using VAD to detect end of speech | **faster-whisper** (or `whisper.cpp` if running directly on Pi); **webrtcvad** / **silero-vad** for end-of-speech detection |
 | `brain` | Orchestrator: local LLM + tool calling (search, weather, smart home) + conversation memory | **Ollama** (local LLM, e.g. Llama 3.1 8B to start) |
-| `tts` | Converts response text to speech, streamed sentence-by-sentence for low latency | **Piper TTS** (local/free) — ElevenLabs or OpenAI TTS as optional higher-quality paid alternative |
+| `tts` | Converts response text to speech, streamed sentence-by-sentence for low latency | **Kokoro TTS** (local/free) — ElevenLabs or OpenAI TTS as optional higher-quality paid alternative |
 | `home-control` | Executes smart home actions | **Home Assistant** REST/websocket API (supports basically every smart plug/bulb brand — future-proofs us against whatever hardware gets bought) |
 | `avatar` | Animates a face/avatar on the screen, synced to speaking state | Web-based (HTML/Canvas), Rive/Lottie or Live2D for lip-sync |
 | `web-tools` | Real-time web search + weather, exposed to `brain` as callable tools | **Brave Search API** or **SerpAPI** (search), **Open-Meteo** (weather, free, no key) |
@@ -43,7 +43,7 @@ To avoid "chatbot pause" and keep it feeling like a real conversation:
 
 1. **Stream everything.** LLM tokens stream from Ollama → fed to TTS sentence-by-sentence, so Jarvis starts speaking before the full response is generated. STT similarly processes partial audio rather than waiting for total silence.
 2. **VAD instead of fixed silence timeouts** — detect the instant speech stops rather than waiting out a timer.
-3. **Test entirely local first.** All services run on the M4 MacBook Pro during development — no network hop, no dependency on final hardware, and the M4 is strong enough to run Ollama + faster-whisper + Piper simultaneously.
+3. **Test entirely local first.** All services run on the M4 MacBook Pro during development — no network hop, no dependency on final hardware, and the M4 is strong enough to run Ollama + faster-whisper + Kokoro simultaneously.
 4. **Start with a smaller/faster LLM** while tuning the pipeline; scale model size up only once latency feels solid.
 
 ---
@@ -57,7 +57,7 @@ jarvis/
     mic-wakeword/          # Porcupine + audio capture
     stt/                   # faster-whisper + VAD
     brain/                 # Ollama + tool-calling orchestrator + memory
-    tts/                   # Piper
+    tts/                   # Kokoro
     home-control/          # Home Assistant API wrapper
     web-tools/             # search + weather
     avatar/                # web-based avatar UI
@@ -89,7 +89,7 @@ Each service gets its own Docker Compose entry, so which machine runs which serv
 1. **MQTT broker up + smoke test** (`mosquitto_pub`/`sub`) on the Mac.
 2. **Bare pipeline, push-to-talk**: mic → faster-whisper → printed text (no wake word yet).
 3. **Add Ollama**: text → LLM → printed response, with a defined personality/system prompt.
-4. **Add Piper TTS**: pipeline talks back out loud.
+4. **Add Kokoro TTS**: pipeline talks back out loud.
 5. **Add Porcupine wake word**: hands-free "Hey Jarvis" trigger.
 6. **Add streaming**: sentence-chunked LLM → TTS to kill response latency.
 7. **Add VAD**: replace timeout-based end-of-speech detection.
@@ -105,3 +105,6 @@ Each service gets its own Docker Compose entry, so which machine runs which serv
 - Whether voice recognition (speaker ID) is in scope for v1 or a later add-on.
 - Final mic/speaker hardware, once picked, to confirm compatibility with the STT/TTS libraries chosen here.
 - Screen size/type for the avatar, to decide between a lightweight web view vs. a full animation engine.
+
+
+8/05/2026 - changed the plan to use Kokoro TTS instead of Piper TTS
