@@ -1,7 +1,7 @@
  - ✅ Step 1: MQTT broker + smoke test
  - ✅ Step 2: Push-to-talk pipeline (mic → faster-whisper → printed text)
- - Step 3: Ollama brain (text → LLM → printed response, defined personality)
- - Step 4: Piper TTS
+ - ✅ Step 3: Ollama brain (text → LLM → printed response, defined personality)
+ - ✅ Step 4: Kokoro TTS
  - Step 5: Porcupine wake word
  - Step 6: Streaming
  - Step 7: Voice Activity Detection
