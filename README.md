@@ -17,14 +17,17 @@ Local voice assistant pipeline over MQTT: wake word → STT → Ollama brain →
 
 ## Run (Mac)
 
-Needs Docker (Mosquitto), Ollama on `:11434`, and a `.venv` in each of `services/{brain,tts,stt,mic-wakeword}`.
+Needs **Docker Desktop** and **Ollama**. Venvs are created/updated automatically.
 
 ```bash
-./start.sh          # broker + all services
-tail -f logs/*.log
-./stop.sh           # stop Python services
-./stop.sh --broker  # also stop Mosquitto
+./start.sh              # broker + Ollama + a Terminal window per service
+./start.sh --bg         # same stack, but backgrounded → logs/*.log
+./start.sh --setup      # only create/update services/*/.venv
+./stop.sh               # stop Python services
+./stop.sh --broker      # also stop Mosquitto
 ```
+
+Or double-click **`Jarvis.command`** in Finder (same as `./start.sh`).
 
 ## MQTT topics in use
 

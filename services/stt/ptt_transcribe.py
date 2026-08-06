@@ -10,6 +10,7 @@ import time
 SILENCE_THRESHOLD = 0.01 # volume cuttoff for "silence"
 SILENCE_DURATION = 0.7 # how long silence is needed to end the listening
 MAX_RECORD_SECONDS = 10.0 # max time to record for
+FOLLOWUP_WINDOW = 3.0
 
 # create the client and connect to the broker
 mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -74,7 +75,8 @@ def transcribe_async(audio):
     if len(audio) == 0:
         return
     print("Transcribing...")
-    segments, _ = model.transcribe(audio, language="en", beam_size=1)
+    segments, _ = model.transcribe(audio, language="en", beam_size=1, vad_filter=True)
+    
     full_text = " ".join(seg.text.strip() for seg in segments).strip()
     if not is_real_utterance(full_text):
         print(f"Ignoring non-speech transcript: {full_text!r}")
@@ -149,20 +151,62 @@ def _record_after_wake():
         transcribe_async(audio)
     finally:
         _wake_busy = False
+        
+def _record_followup():
+    global _wake_busy
+    try:
+        print(f"Listening for follow-up ({FOLLOWUP_WINDOW}s)...")
+        recorder.start()
+
+        heard_speech = False
+        silence_started_at = None
+        started_at = time.monotonic()
+
+        while True:
+            time.sleep(0.2)
+
+            if not recorder._frames:
+                if (time.monotonic() - started_at) >= FOLLOWUP_WINDOW:
+                    print("No follow-up — back to wake word.")
+                    break
+                continue
+
+            loudness = chunk_loudness(recorder._frames[-1])
+            now = time.monotonic()
+
+            if loudness >= SILENCE_THRESHOLD:
+                heard_speech = True
+                silence_started_at = None
+            elif heard_speech:
+                if silence_started_at is None:
+                    silence_started_at = now
+                elif (now - silence_started_at) >= SILENCE_DURATION:
+                    print(" Silence detected, stopping.")
+                    break
+            else:
+                # still waiting for first speech
+                if (now - started_at) >= FOLLOWUP_WINDOW:
+                    print("No follow-up — back to wake word.")
+                    break
+
+            if (now - started_at) >= MAX_RECORD_SECONDS:
+                print(" Max record time reached, stopping.")
+                break
+
+        if not heard_speech:
+            recorder.stop()
+            return
+
+        audio = recorder.stop()
+        transcribe_async(audio)
+    finally:
+        _wake_busy = False
 
 # check if the input is a real sentence or just emptiness
 def is_real_utterance(text: str) -> bool:
     cleaned = "".join(ch for ch in text if ch.isalnum())
     return len(cleaned) >= 2
 
-def on_wake_message(client, userdata, msg):
-    global _wake_busy
-    if msg.payload.decode() != "detected":
-        return
-    if _wake_busy or recorder._recording:
-        return
-    _wake_busy = True
-    threading.Thread(target=_record_after_wake, daemon=True).start()
 
 # find loudness of an audio chunk
 def chunk_loudness(chunk) -> float:
@@ -172,9 +216,28 @@ def chunk_loudness(chunk) -> float:
     # square root of the average of all the samples squared
     return float(np.sqrt(np.mean(samples ** 2)))
 
+def on_mqtt_message(client, userdata, msg):
+    global _wake_busy
+    topic = msg.topic
+    payload = msg.payload.decode()
 
-mqtt_client.on_message = on_wake_message
+    if topic == "jarvis/wake/detected" and payload != "detected":
+        return
+    if topic == "jarvis/tts/response" and payload != "done":
+        return
+    if _wake_busy or recorder._recording:
+        return
+
+    _wake_busy = True
+    if topic == "jarvis/tts/response":
+        threading.Thread(target=_record_followup, daemon=True).start()
+    else:
+        threading.Thread(target=_record_after_wake, daemon=True).start()
+
+
+mqtt_client.on_message = on_mqtt_message
 mqtt_client.subscribe("jarvis/wake/detected")
+mqtt_client.subscribe("jarvis/tts/response")
 
 print("Ready. Hold SPACE to talk, release to stop. Esc to quit.")
 print("Also listening for wake word on jarvis/wake/detected")
