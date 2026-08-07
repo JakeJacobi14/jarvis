@@ -1,3 +1,4 @@
+from datetime import datetime
 import numpy as np
 import sounddevice as sd
 from pynput import keyboard
@@ -5,12 +6,26 @@ from faster_whisper import WhisperModel
 import threading
 import paho.mqtt.client as mqtt
 import time
+import os
 
 # VAD
 SILENCE_THRESHOLD = 0.01 # volume cuttoff for "silence"
 SILENCE_DURATION = 0.7 # how long silence is needed to end the listening
 MAX_RECORD_SECONDS = 10.0 # max time to record for
 FOLLOWUP_WINDOW = 3.0
+
+
+def ts(msg: str):
+    stamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    line = f"[{stamp}] STT  | {msg}"
+    print(line, flush=True)
+    path = os.environ.get("JARVIS_TIMING_LOG")
+    if path:
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
 
 # create the client and connect to the broker
 mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -63,8 +78,10 @@ class PushToTalkRecorder:
         return np.array([], dtype=np.float32)
 
 # Load the whisper model
-print("Loading Whisper model...")
+ts("Loading Whisper model...")
+_t_load = time.perf_counter()
 model = WhisperModel("base.en", device="cpu", compute_type="int8")
+ts(f"Whisper ready in {time.perf_counter() - _t_load:.2f}s")
 recorder = PushToTalkRecorder()
 
 
@@ -74,14 +91,17 @@ is_space_pressed = False
 def transcribe_async(audio):
     if len(audio) == 0:
         return
-    print("Transcribing...")
+    audio_secs = len(audio) / recorder.sample_rate
+    ts(f"transcribing {audio_secs:.2f}s of audio...")
+    t0 = time.perf_counter()
     segments, _ = model.transcribe(audio, language="en", beam_size=1, vad_filter=True)
-    
+    elapsed = time.perf_counter() - t0
+
     full_text = " ".join(seg.text.strip() for seg in segments).strip()
     if not is_real_utterance(full_text):
-        print(f"Ignoring non-speech transcript: {full_text!r}")
+        ts(f"ignored non-speech in {elapsed:.2f}s: {full_text!r}")
         return
-    print(f"Transcribed: {full_text}")
+    ts(f"done in {elapsed:.2f}s → {full_text!r}")
     mqtt_client.publish("jarvis/stt/text", full_text)
 
 # If the user presses the key, start listening
@@ -110,7 +130,7 @@ _wake_busy = False
 def _record_after_wake():
     global _wake_busy
     try:
-        print("Wake word triggered! Listening until you finish speaking...")
+        ts("wake received — listening until you finish speaking...")
         recorder.start()
 
         heard_speech = False
@@ -135,15 +155,15 @@ def _record_after_wake():
                 if silence_started_at is None:
                     silence_started_at = now
                 elif (now - silence_started_at) >= SILENCE_DURATION:
-                    print(" Silence detected, stopping.")
+                    ts(f"silence detected — recorded {now - started_at:.2f}s")
                     break
 
             # max recording length check
             if (now - started_at) >= MAX_RECORD_SECONDS:
-                print(" Max record time reached, stopping.")
+                ts("max record time reached, stopping")
                 break
         if not heard_speech:
-            print("No speech heard, ignoring.")
+            ts("no speech heard, ignoring")
             recorder.stop()
             return
 
@@ -151,11 +171,11 @@ def _record_after_wake():
         transcribe_async(audio)
     finally:
         _wake_busy = False
-        
+
 def _record_followup():
     global _wake_busy
     try:
-        print(f"Listening for follow-up ({FOLLOWUP_WINDOW}s)...")
+        ts(f"follow-up window open ({FOLLOWUP_WINDOW}s)...")
         recorder.start()
 
         heard_speech = False
@@ -167,7 +187,7 @@ def _record_followup():
 
             if not recorder._frames:
                 if (time.monotonic() - started_at) >= FOLLOWUP_WINDOW:
-                    print("No follow-up — back to wake word.")
+                    ts("no follow-up — back to wake word")
                     break
                 continue
 
@@ -181,16 +201,16 @@ def _record_followup():
                 if silence_started_at is None:
                     silence_started_at = now
                 elif (now - silence_started_at) >= SILENCE_DURATION:
-                    print(" Silence detected, stopping.")
+                    ts(f"silence detected — recorded {now - started_at:.2f}s")
                     break
             else:
                 # still waiting for first speech
                 if (now - started_at) >= FOLLOWUP_WINDOW:
-                    print("No follow-up — back to wake word.")
+                    ts("no follow-up — back to wake word")
                     break
 
             if (now - started_at) >= MAX_RECORD_SECONDS:
-                print(" Max record time reached, stopping.")
+                ts("max record time reached, stopping")
                 break
 
         if not heard_speech:
@@ -239,7 +259,7 @@ mqtt_client.on_message = on_mqtt_message
 mqtt_client.subscribe("jarvis/wake/detected")
 mqtt_client.subscribe("jarvis/tts/response")
 
-print("Ready. Hold SPACE to talk, release to stop. Esc to quit.")
-print("Also listening for wake word on jarvis/wake/detected")
+ts("Ready. Hold SPACE to talk, release to stop. Esc to quit.")
+ts("Also listening for wake word on jarvis/wake/detected")
 with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
     listener.join()

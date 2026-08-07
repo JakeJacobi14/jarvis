@@ -1,12 +1,31 @@
+from datetime import datetime
 import queue
 import threading
 import time
+import os
 import sounddevice as sd
 import paho.mqtt.client as mqtt
 from jarvis_tts import JarvisTTS
 
+
+def ts(msg: str):
+    stamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    line = f"[{stamp}] TTS  | {msg}"
+    print(line, flush=True)
+    path = os.environ.get("JARVIS_TIMING_LOG")
+    if path:
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+
+
+ts("loading Kokoro...")
+_t_load = time.perf_counter()
 tts = JarvisTTS(voice="bm_lewis")
 tts.say("Loading.")
+ts(f"ready in {time.perf_counter() - _t_load:.2f}s")
 
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 client.connect("localhost", 1883, keepalive=30)
@@ -32,17 +51,21 @@ def speaker_loop():
         try:
             if _interrupt.is_set():
                 continue
+            t0 = time.perf_counter()
+            ts(f"speaking ← {text!r}")
             tts.say(text)
+            ts(f"spoke in {time.perf_counter() - t0:.2f}s")
         except Exception as e:
-            print(f"Error in TTS: {e}", flush=True)
+            ts(f"error: {e}")
         finally:
             speak_queue.task_done()
             if speak_queue.empty() and not _interrupt.is_set():
+                ts("queue empty → done")
                 client.publish("jarvis/tts/response", "done")
 
 
 def on_interrupt(client, userdata, msg):
-    print("Interrupt received — stopping speech", flush=True)
+    ts("interrupt — stopping speech")
     _interrupt.set()
     clear_queue()
     sd.stop()
@@ -53,7 +76,7 @@ def on_message(client, userdata, msg):
     text = msg.payload.decode().strip()
     if not text:
         return
-    print(f"Received: {text}", flush=True)
+    ts(f"queued ← {text!r}")
     speak_queue.put(text)
 
 
@@ -65,11 +88,11 @@ client.loop_start()
 
 threading.Thread(target=speaker_loop, daemon=True).start()
 
-print("tts listening...")
+ts("listening...")
 try:
     while True:
         time.sleep(1)
 except KeyboardInterrupt:
-    print("Shutting down...")
+    ts("shutting down...")
     speak_queue.put(None)
     client.disconnect()

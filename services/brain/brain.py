@@ -1,7 +1,9 @@
+from datetime import datetime
 import requests
 import json
 import paho.mqtt.client as mqtt
 import time
+import os
 
 # create the client
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -22,12 +24,31 @@ Use recent conversation context when it helps. If something is unclear, ask one 
 
 messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-def publish_sentence(sentence: str):
+
+def ts(msg: str):
+    stamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    line = f"[{stamp}] LLM  | {msg}"
+    print(line, flush=True)
+    path = os.environ.get("JARVIS_TIMING_LOG")
+    if path:
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+
+
+def publish_sentence(sentence: str, *, first: bool, t0: float):
     sentence = sentence.strip()
     if not sentence:
-        return
-    print(f"Sentence: {sentence}")
+        return False
+    elapsed = time.perf_counter() - t0
+    if first:
+        ts(f"first sentence in {elapsed:.2f}s → {sentence!r}")
+    else:
+        ts(f"sentence (+{elapsed:.2f}s) → {sentence!r}")
     client.publish("jarvis/brain/response", sentence)
+    return True
 
 
 def query_brain(user_text: str):
@@ -50,11 +71,14 @@ def query_brain(user_text: str):
         },
     }
 
+    t0 = time.perf_counter()
+    ts(f"request start ← {user_text!r}")
     response = requests.post(OLLAMA_URL, json=payload, stream=True)
     response.raise_for_status()
 
     buffer = ""
     full = []
+    published_any = False
     for line in response.iter_lines(decode_unicode=True):
         if not line:
             continue
@@ -69,12 +93,15 @@ def query_brain(user_text: str):
                 break
             idx = min(ends)
             sentence, buffer = buffer[: idx + 1], buffer[idx + 1 :]
-            publish_sentence(sentence)
+            if publish_sentence(sentence, first=not published_any, t0=t0):
+                published_any = True
 
         if data.get("done"):
             break
 
-    publish_sentence(buffer)
+    if publish_sentence(buffer, first=not published_any, t0=t0):
+        published_any = True
+    ts(f"stream done in {time.perf_counter() - t0:.2f}s")
     assistant_text = "".join(full).strip()
     if assistant_text:
         messages.append({"role": "assistant", "content": assistant_text})
@@ -83,20 +110,20 @@ def query_brain(user_text: str):
 # on message from ollama recieved
 def on_message(client, userdata, msg):
     text = msg.payload.decode()
-    print(f"Received: {text}")
+    ts(f"received STT text ← {text!r}")
     try:
-        response = query_brain(text)
+        query_brain(text)
     except Exception as e:
-        print(f"Error calling brain: {e}")
-        
+        ts(f"error: {e}")
+
 client.on_message = on_message
 client.subscribe("jarvis/stt/text")
 client.loop_start()  # start listening in the background
 
-print("Brain listening on jarvis/stt/text...")
+ts("listening on jarvis/stt/text...")
 try:
     while True:
         time.sleep(1) # the main loop, keep the program running
 except KeyboardInterrupt:
-    print("Shutting down...")
+    ts("shutting down...")
     client.disconnect()

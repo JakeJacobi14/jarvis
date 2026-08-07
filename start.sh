@@ -2,8 +2,9 @@
 # Start Jarvis: MQTT broker, Ollama, and all Python services.
 #
 # Usage:
-#   ./start.sh            # open each service in its own Terminal window (Mac)
-#   ./start.sh --bg       # old style: background + logs/*.log
+#   ./start.sh            # Mac: Terminal windows per service; Linux: background + logs
+#   ./start.sh --open     # force Terminal windows (macOS only)
+#   ./start.sh --bg       # background + logs/*.log
 #   ./start.sh --setup    # only create/update venvs, then exit
 #   ./start.sh --help
 set -euo pipefail
@@ -13,16 +14,25 @@ cd "$ROOT"
 
 LOG_DIR="$ROOT/logs"
 PID_DIR="$ROOT/.pids"
+TIMING_LOG="$LOG_DIR/timing.log"
 mkdir -p "$LOG_DIR" "$PID_DIR"
+export JARVIS_TIMING_LOG="$TIMING_LOG"
 
-MODE="open"   # open | bg | setup
+OS="$(uname -s)"
+# Default: open Terminals on macOS, background everywhere else
+if [[ "$OS" == "Darwin" ]]; then
+  MODE="open"
+else
+  MODE="bg"
+fi
+
 for arg in "$@"; do
   case "$arg" in
     --bg|-b) MODE="bg" ;;
     --setup|-s) MODE="setup" ;;
     --open|-o) MODE="open" ;;
     --help|-h)
-      sed -n '2,10p' "$0"
+      sed -n '2,11p' "$0"
       exit 0
       ;;
     *)
@@ -90,19 +100,23 @@ ensure_broker() {
   fi
   echo "==> Starting MQTT broker (Docker)..."
   if ! command -v docker >/dev/null 2>&1; then
-    echo "ERROR: docker not found. Install Docker Desktop, then retry."
+    echo "ERROR: docker not found. Install Docker, then retry."
     exit 1
   fi
-  # Wake Docker Desktop if the daemon isn't up yet
+  # Wake Docker Desktop on macOS if the daemon isn't up yet
   if ! docker info >/dev/null 2>&1; then
-    echo "    Docker daemon not ready — opening Docker Desktop..."
-    open -a Docker 2>/dev/null || true
+    if [[ "$OS" == "Darwin" ]]; then
+      echo "    Docker daemon not ready — opening Docker Desktop..."
+      open -a Docker 2>/dev/null || true
+    else
+      echo "    Docker daemon not ready — start the Docker service, then retry."
+    fi
     for _ in {1..60}; do
       docker info >/dev/null 2>&1 && break
       sleep 1
     done
     if ! docker info >/dev/null 2>&1; then
-      echo "ERROR: Docker did not become ready. Open Docker Desktop and retry."
+      echo "ERROR: Docker did not become ready."
       exit 1
     fi
   fi
@@ -123,10 +137,9 @@ ensure_ollama() {
     return
   fi
   echo "==> Starting Ollama..."
-  if [[ -d "/Applications/Ollama.app" ]]; then
+  if [[ "$OS" == "Darwin" ]] && [[ -d "/Applications/Ollama.app" ]]; then
     open -a Ollama
   elif command -v ollama >/dev/null 2>&1; then
-    # Fall back to CLI serve in the background
     nohup ollama serve >>"$LOG_DIR/ollama.log" 2>&1 &
     echo $! >"$PID_DIR/ollama.pid"
   else
@@ -144,6 +157,16 @@ ensure_ollama() {
   fi
 }
 
+ensure_tts_models() {
+  local model="$ROOT/services/tts/models/kokoro-v1.0.fp16.onnx"
+  local voices="$ROOT/services/tts/models/voices-v1.0.bin"
+  if [[ -f "$model" && -f "$voices" ]]; then
+    return
+  fi
+  echo "==> TTS models missing — downloading..."
+  bash "$ROOT/services/tts/download_models.sh"
+}
+
 start_service_bg() {
   local name="$1"
   local dir="$2"
@@ -157,6 +180,7 @@ start_service_bg() {
   : >"$logfile"
   (
     cd "$workdir"
+    export JARVIS_TIMING_LOG="$TIMING_LOG"
     exec "$venv" -u "$script"
   ) >>"$logfile" 2>&1 &
   echo $! >"$pidfile"
@@ -173,16 +197,29 @@ open_service_terminal() {
   osascript >/dev/null <<EOF
 tell application "Terminal"
   activate
-  do script "cd '$workdir'; clear; echo '======================================'; echo '  Jarvis · $name'; echo '  $script'; echo '======================================'; echo; '$venv_python' -u '$script'; echo; echo '[$name exited — press Return to close]'; read"
+  do script "export JARVIS_TIMING_LOG='$TIMING_LOG'; cd '$workdir'; clear; echo '======================================'; echo '  Jarvis · $name'; echo '  $script'; echo '======================================'; echo; '$venv_python' -u '$script'; echo; echo '[$name exited — press Return to close]'; read"
 end tell
 EOF
   echo "==> Opened Terminal for $name"
+}
+
+watch_timing() {
+  echo
+  echo "══════════════════════════════════════"
+  echo "  Timing feed  (all services)"
+  echo "  Ctrl-C stops this view only — services keep running"
+  echo "  Stop all: ./stop.sh"
+  echo "══════════════════════════════════════"
+  echo
+  # -F follows even if the file is recreated
+  tail -n 0 -F "$TIMING_LOG"
 }
 
 # ── main ────────────────────────────────────────────────────────────
 
 echo "==> Ensuring Python venvs..."
 ensure_all_venvs
+ensure_tts_models
 
 if [[ "$MODE" == "setup" ]]; then
   echo "Setup complete. Venvs are ready under services/*/.venv"
@@ -197,6 +234,9 @@ fi
 
 ensure_broker
 ensure_ollama
+
+# Fresh timing session for this run
+: >"$TIMING_LOG"
 
 if [[ "$MODE" == "open" ]]; then
   if ! command -v osascript >/dev/null 2>&1; then
@@ -231,7 +271,9 @@ else
   date >"$PID_DIR/services.pid"
   echo
   echo "All services started in background."
-  echo "  Tail logs:   tail -f logs/*.log"
+  echo "  Full logs:   tail -f logs/*.log"
   echo "  Stop all:    ./stop.sh"
   echo "  Stop + broker: ./stop.sh --broker"
 fi
+
+watch_timing
