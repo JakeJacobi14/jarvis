@@ -18,6 +18,15 @@ TIMING_LOG="$LOG_DIR/timing.log"
 mkdir -p "$LOG_DIR" "$PID_DIR"
 export JARVIS_TIMING_LOG="$TIMING_LOG"
 
+# Load repo .env into this process (and children) without overriding existing exports.
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+  echo "==> Loaded .env"
+fi
+
 OS="$(uname -s)"
 # Default: open Terminals on macOS, background everywhere else
 if [[ "$OS" == "Darwin" ]]; then
@@ -157,7 +166,40 @@ ensure_ollama() {
   fi
 }
 
+ensure_llm() {
+  local provider="${JARVIS_LLM_PROVIDER:-groq}"
+  provider="$(echo "$provider" | tr '[:upper:]' '[:lower:]')"
+  echo "==> LLM provider: $provider"
+  if [[ "$provider" == "ollama" ]]; then
+    ensure_ollama
+    return
+  fi
+  if [[ "$provider" == "groq" ]]; then
+    if [[ -z "${GROQ_API_KEY:-}" ]]; then
+      echo "WARNING: GROQ_API_KEY is empty — set it in .env (see .env.example)"
+    else
+      echo "    Groq model: ${GROQ_MODEL:-openai/gpt-oss-20b}"
+    fi
+    return
+  fi
+  echo "WARNING: unknown JARVIS_LLM_PROVIDER=$provider (expected groq|ollama)"
+}
+
 ensure_tts_models() {
+  local provider
+  provider="$(echo "${JARVIS_TTS_PROVIDER:-cartesia}" | tr '[:upper:]' '[:lower:]')"
+  echo "==> TTS provider: $provider"
+  if [[ "$provider" == "cartesia" ]]; then
+    if [[ -z "${CARTESIA_API_KEY:-}" ]]; then
+      echo "WARNING: CARTESIA_API_KEY is empty — set it in .env (see .env.example)"
+    else
+      echo "    Cartesia model: ${CARTESIA_TTS_MODEL:-sonic-3.5}"
+    fi
+    return
+  fi
+  if [[ "$provider" != "kokoro" ]]; then
+    echo "WARNING: unknown JARVIS_TTS_PROVIDER=$provider (expected cartesia|kokoro)"
+  fi
   local model="$ROOT/services/tts/models/kokoro-v1.0.fp16.onnx"
   local voices="$ROOT/services/tts/models/voices-v1.0.bin"
   if [[ -f "$model" && -f "$voices" ]]; then
@@ -165,6 +207,21 @@ ensure_tts_models() {
   fi
   echo "==> TTS models missing — downloading..."
   bash "$ROOT/services/tts/download_models.sh"
+}
+
+ensure_stt() {
+  local provider
+  provider="$(echo "${JARVIS_STT_PROVIDER:-cartesia}" | tr '[:upper:]' '[:lower:]')"
+  echo "==> STT provider: $provider"
+  if [[ "$provider" == "cartesia" ]]; then
+    if [[ -z "${CARTESIA_API_KEY:-}" ]]; then
+      echo "WARNING: CARTESIA_API_KEY is empty — needed for Ink-2 STT"
+    else
+      echo "    Cartesia model: ${CARTESIA_STT_MODEL:-ink-2}"
+    fi
+  elif [[ "$provider" != "whisper" ]]; then
+    echo "WARNING: unknown JARVIS_STT_PROVIDER=$provider (expected cartesia|whisper)"
+  fi
 }
 
 start_service_bg() {
@@ -194,10 +251,11 @@ open_service_terminal() {
   local workdir="$ROOT/services/$dir"
   local venv_python="$workdir/.venv/bin/python"
   # Paths in this repo have no spaces/quotes; keep the AppleScript simple.
+  # Source .env inside the new Terminal so Groq keys reach brain.py.
   osascript >/dev/null <<EOF
 tell application "Terminal"
   activate
-  do script "export JARVIS_TIMING_LOG='$TIMING_LOG'; cd '$workdir'; clear; echo '======================================'; echo '  Jarvis · $name'; echo '  $script'; echo '======================================'; echo; '$venv_python' -u '$script'; echo; echo '[$name exited — press Return to close]'; read"
+  do script "cd '$workdir'; clear; set -a; [ -f '$ROOT/.env' ] && source '$ROOT/.env'; set +a; export JARVIS_TIMING_LOG='$TIMING_LOG'; echo '======================================'; echo '  Jarvis · $name'; echo '  $script'; echo '======================================'; echo; '$venv_python' -u '$script'; echo; echo '[$name exited — press Return to close]'; read"
 end tell
 EOF
   echo "==> Opened Terminal for $name"
@@ -233,7 +291,8 @@ if [[ -f "$PID_DIR/services.pid" ]] && [[ "$MODE" == "bg" ]]; then
 fi
 
 ensure_broker
-ensure_ollama
+ensure_llm
+ensure_stt
 
 # Fresh timing session for this run
 : >"$TIMING_LOG"

@@ -3,3 +3,4 @@ sounddevice
 numpy
 paho-mqtt
 pynput
+cartesia[websockets]==3.5.1

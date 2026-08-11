@@ -1,16 +1,16 @@
 # Jarvis
 
-Local voice assistant pipeline over MQTT: wake word → STT → Ollama brain → TTS.
+Local voice assistant pipeline over MQTT: wake word → STT → LLM brain → TTS.
 
 ## Build progress
 
 - ✅ Step 1: MQTT broker + smoke test
-- ✅ Step 2: Push-to-talk pipeline (mic → faster-whisper → text)
-- ✅ Step 3: Ollama brain (personality + MQTT)
-- ✅ Step 4: Kokoro TTS
+- ✅ Step 2: Push-to-talk / wake STT — **Cartesia Ink-2** (Whisper local fallback)
+- ✅ Step 3: LLM brain (personality + MQTT) — **Groq `openai/gpt-oss-20b`** (Ollama fallback)
+- ✅ Step 4: TTS — **Cartesia Sonic-3.5** (Kokoro local fallback)
 - ✅ Step 5: openWakeWord ("Hey Jarvis")
 - ✅ Step 6: Streaming LLM → sentence-chunked TTS queue
-- ✅ Step 7: End-of-speech detection (energy/RMS VAD; library VAD later)
+- ✅ Step 7: End-of-speech — Ink-2 turn detection (Whisper path keeps local energy VAD)
 - ✅ Conversation memory + listen-again after TTS
 - Step 8: Home Assistant + web/weather tools
 - Step 9: Avatar UI
@@ -19,9 +19,31 @@ Local voice assistant pipeline over MQTT: wake word → STT → Ollama brain →
 ## Requirements
 
 - **Docker** (Mosquitto broker)
-- **Ollama** with a chat model, e.g. `ollama pull llama3.2:3b`
+- **Groq API key** (default brain) — [console.groq.com/keys](https://console.groq.com/keys)
+  - Or **Ollama** with e.g. `ollama pull llama3.2:3b` if `JARVIS_LLM_PROVIDER=ollama`
+- **Cartesia API key** (default TTS + STT) — [play.cartesia.ai/keys](https://play.cartesia.ai/keys)
+  - Or local Kokoro if `JARVIS_TTS_PROVIDER=kokoro` / Whisper if `JARVIS_STT_PROVIDER=whisper`
 - **Python 3.10+**, mic + speakers
-- Kokoro TTS model files (auto-downloaded by `./start.sh` if missing)
+## Config
+
+```bash
+cp .env.example .env
+# edit .env → set GROQ_API_KEY=gsk_...
+```
+
+| Variable | Default | Notes |
+|---|---|---|
+| `JARVIS_LLM_PROVIDER` | `groq` | `groq` or `ollama` |
+| `GROQ_API_KEY` | — | required for Groq |
+| `GROQ_MODEL` | `openai/gpt-oss-20b` | |
+| `GROQ_REASONING_EFFORT` | `low` | keep low for voice latency |
+| `JARVIS_MAX_TOKENS` | `80` | short spoken replies |
+| `JARVIS_TTS_PROVIDER` | `cartesia` | `cartesia` or `kokoro` |
+| `CARTESIA_API_KEY` | — | required for Cartesia TTS |
+| `CARTESIA_TTS_MODEL` | `sonic-3.5` | |
+| `CARTESIA_VOICE_ID` | Archie (en-GB male) | [voice library](https://play.cartesia.ai/voices) |
+| `JARVIS_STT_PROVIDER` | `cartesia` | `cartesia` (Ink-2) or `whisper` |
+| `CARTESIA_STT_MODEL` | `ink-2` | streaming STT + turn detection |
 
 ## Run
 
@@ -37,14 +59,16 @@ On macOS you can also double-click **`Jarvis.command`**.
 
 ### Linux notes
 
-Not quite one-click: install Docker + Ollama yourself, then:
+Not quite one-click: install Docker yourself, then:
 
 ```bash
 git clone https://github.com/JakeJacobi14/jarvis.git
 cd jarvis
-ollama pull llama3.2:3b
+cp .env.example .env
+# edit .env → set GROQ_API_KEY and CARTESIA_API_KEY (his own keys)
+sudo apt install portaudio19-dev python3-venv   # Debian/Ubuntu; see below
 ./start.sh              # uses --bg automatically on Linux
-tail -f logs/*.log      # watch timing lines
+tail -f logs/timing.log # watch the pipeline
 ```
 
 You may also need PortAudio for mic/speakers:
@@ -63,13 +87,12 @@ sudo dnf install portaudio-devel
 With the stack running, inject 5 fixed prompts (skips mic/STT) and print splits:
 
 ```bash
-./bench.sh --label local                 # baseline (local Ollama + Kokoro)
-# … swap brain to an API …
-./bench.sh --label api-llm
-# … swap TTS to an API …
-./bench.sh --label api-llm-tts
+./bench.sh --label ollama                 # if you still have a local baseline
+./bench.sh --label groq-gpt-oss-20b       # after switching to Groq
+# … later, after Sonic TTS …
+./bench.sh --label groq-sonic
 
-./bench.sh --compare logs/benchmarks/<local>.json logs/benchmarks/<api-llm>.json
+./bench.sh --compare logs/benchmarks/<a>.json logs/benchmarks/<b>.json
 ```
 
 Results land in `logs/benchmarks/`. Metrics per prompt: time-to-first sentence, LLM stream≈done, TTS tail, and end-to-end until speech finishes. Brain memory is reset between prompts so runs stay comparable.

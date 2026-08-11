@@ -5,7 +5,7 @@ import time
 import os
 import sounddevice as sd
 import paho.mqtt.client as mqtt
-from jarvis_tts import JarvisTTS
+from jarvis_tts import create_tts, provider_name
 
 
 def ts(msg: str):
@@ -21,9 +21,11 @@ def ts(msg: str):
             pass
 
 
-ts("loading Kokoro...")
+provider = provider_name()
+ts(f"loading TTS provider={provider}...")
 _t_load = time.perf_counter()
-tts = JarvisTTS(voice="bm_lewis")
+tts = create_tts()
+# Warm-up / confirm audio path
 tts.say("Loading.")
 ts(f"ready in {time.perf_counter() - _t_load:.2f}s")
 
@@ -71,7 +73,11 @@ def on_interrupt(client, userdata, msg):
     ts("interrupt — stopping speech")
     _interrupt.set()
     clear_queue()
-    sd.stop()
+    tts.interrupt()
+    try:
+        sd.stop()
+    except Exception:
+        pass
     _interrupt.clear()
 
 
