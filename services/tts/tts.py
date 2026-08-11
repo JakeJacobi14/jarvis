@@ -53,8 +53,11 @@ def speaker_loop():
                 continue
             t0 = time.perf_counter()
             ts(f"speaking ← {text!r}")
-            tts.say(text)
-            ts(f"spoke in {time.perf_counter() - t0:.2f}s")
+            synth_s, play_s = tts.say(text)
+            ts(
+                f"spoke in {time.perf_counter() - t0:.2f}s "
+                f"(synth {synth_s:.2f}s, play {play_s:.2f}s)"
+            )
         except Exception as e:
             ts(f"error: {e}")
         finally:

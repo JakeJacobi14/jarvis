@@ -107,9 +107,17 @@ def query_brain(user_text: str):
         messages.append({"role": "assistant", "content": assistant_text})
 
 
+def reset_memory():
+    messages[:] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    ts("memory cleared")
+
+
 # on message from ollama recieved
 def on_message(client, userdata, msg):
     text = msg.payload.decode()
+    if msg.topic == "jarvis/brain/reset":
+        reset_memory()
+        return
     ts(f"received STT text ← {text!r}")
     try:
         query_brain(text)
@@ -118,6 +126,7 @@ def on_message(client, userdata, msg):
 
 client.on_message = on_message
 client.subscribe("jarvis/stt/text")
+client.subscribe("jarvis/brain/reset")
 client.loop_start()  # start listening in the background
 
 ts("listening on jarvis/stt/text...")

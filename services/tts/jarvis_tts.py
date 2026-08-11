@@ -1,5 +1,6 @@
 from kokoro_onnx import Kokoro
 import sounddevice as sd
+import time
 
 
 class JarvisTTS:
@@ -21,6 +22,8 @@ class JarvisTTS:
         self.lang = lang
 
     def say(self, text: str):
+        """Synthesize and play. Returns (synth_seconds, play_seconds)."""
+        t0 = time.perf_counter()
         samples, sample_rate = self.tts.create(
             text,
             voice=self.voice,
@@ -28,6 +31,10 @@ class JarvisTTS:
             lang=self.lang,
             trim=False,
         )
+        synth_s = time.perf_counter() - t0
 
+        t1 = time.perf_counter()
         sd.play(samples, sample_rate)
         sd.wait()
+        play_s = time.perf_counter() - t1
+        return synth_s, play_s

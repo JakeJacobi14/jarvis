@@ -58,6 +58,22 @@ sudo dnf install portaudio-devel
 
 `Jarvis.command` and Terminal auto-open are macOS-only; on Linux use `./start.sh` (background) or run each service in your own terminals.
 
+## Benchmark (LLM + TTS)
+
+With the stack running, inject 5 fixed prompts (skips mic/STT) and print splits:
+
+```bash
+./bench.sh --label local                 # baseline (local Ollama + Kokoro)
+# … swap brain to an API …
+./bench.sh --label api-llm
+# … swap TTS to an API …
+./bench.sh --label api-llm-tts
+
+./bench.sh --compare logs/benchmarks/<local>.json logs/benchmarks/<api-llm>.json
+```
+
+Results land in `logs/benchmarks/`. Metrics per prompt: time-to-first sentence, LLM stream≈done, TTS tail, and end-to-end until speech finishes. Brain memory is reset between prompts so runs stay comparable.
+
 ## Timing logs
 
 Each service stamps stages as `WAKE` / `STT` / `LLM` / `TTS`.  
@@ -80,6 +96,7 @@ Ctrl-C in the main window only stops the timing view — services keep running (
 | `jarvis/wake/detected` | wake → STT |
 | `jarvis/tts/interrupt` | wake → TTS (barge-in) |
 | `jarvis/stt/text` | STT → brain |
+| `jarvis/brain/reset` | bench → brain (clear conversation memory) |
 | `jarvis/brain/response` | brain → TTS (one sentence per message when streaming) |
 | `jarvis/tts/response` | TTS → `done` when queue drains |
 
