@@ -12,7 +12,8 @@ Local voice assistant pipeline over MQTT: wake word → STT → LLM brain → TT
 - ✅ Step 6: Streaming LLM → sentence-chunked TTS queue
 - ✅ Step 7: End-of-speech — Ink-2 turn detection (Whisper path keeps local energy VAD)
 - ✅ Conversation memory + listen-again after TTS
-- Step 8: Home Assistant + web/weather tools
+- ✅ Brain command system + Tavily web search (`google …` / `search …` / live-fact detect)
+- Step 8: Home Assistant + weather tools
 - Step 9: Avatar UI
 - Step 10: Real hardware
 
@@ -23,12 +24,13 @@ Local voice assistant pipeline over MQTT: wake word → STT → LLM brain → TT
   - Or **Ollama** with e.g. `ollama pull llama3.2:3b` if `JARVIS_LLM_PROVIDER=ollama`
 - **Cartesia API key** (default TTS + STT) — [play.cartesia.ai/keys](https://play.cartesia.ai/keys)
   - Or local Kokoro if `JARVIS_TTS_PROVIDER=kokoro` / Whisper if `JARVIS_STT_PROVIDER=whisper`
+- **Tavily API key** (web search commands) — [app.tavily.com](https://app.tavily.com/home)
 - **Python 3.10+**, mic + speakers
 ## Config
 
 ```bash
 cp .env.example .env
-# edit .env → set GROQ_API_KEY=gsk_...
+# edit .env → set GROQ_API_KEY=gsk_... and TAVILY_API_KEY=tvly-...
 ```
 
 | Variable | Default | Notes |
@@ -38,12 +40,39 @@ cp .env.example .env
 | `GROQ_MODEL` | `openai/gpt-oss-20b` | |
 | `GROQ_REASONING_EFFORT` | `low` | keep low for voice latency |
 | `JARVIS_MAX_TOKENS` | `80` | short spoken replies |
+| `TAVILY_API_KEY` | — | required for `google` / `search` commands |
+| `TAVILY_MAX_RESULTS` | `5` | hits fed into the spoken summary |
+| `SPOTIFY_CLIENT_ID` | — | Spotify developer app |
+| `SPOTIFY_CLIENT_SECRET` | — | Spotify developer app |
+| `SPOTIFY_REFRESH_TOKEN` | — | from `spotify_auth.py` |
 | `JARVIS_TTS_PROVIDER` | `cartesia` | `cartesia` or `kokoro` |
 | `CARTESIA_API_KEY` | — | required for Cartesia TTS |
 | `CARTESIA_TTS_MODEL` | `sonic-3.5` | |
 | `CARTESIA_VOICE_ID` | Archie (en-GB male) | [voice library](https://play.cartesia.ai/voices) |
 | `JARVIS_STT_PROVIDER` | `cartesia` | `cartesia` (Ink-2) or `whisper` |
 | `CARTESIA_STT_MODEL` | `ink-2` | streaming STT + turn detection |
+
+### Voice commands (brain)
+
+Extensible registry in `services/brain/commands/`. First match wins.
+
+| Say… | What happens |
+|---|---|
+| `google …` / `search …` / `look up …` | Tavily search → short spoken summary |
+| live / ranking / encyclopedic facts | auto-search via Tavily (with silent-reply fallback) |
+| `what day/time/date is it` | local clock (no web) |
+| `play …` / `put on …` | Spotify search + play (Premium + auth) |
+| `pause` / `resume` / `skip` / `next` / `previous` | Spotify playback control |
+
+**Spotify setup:** create a [Spotify developer app](https://developer.spotify.com/dashboard), add redirect URI `http://127.0.0.1:8732/callback`, put `SPOTIFY_CLIENT_ID` + `SPOTIFY_CLIENT_SECRET` in `.env`, then:
+
+```bash
+cd services/brain && .venv/bin/python spotify_auth.py
+```
+
+Open the Spotify app on a phone/computer (Premium), restart brain, then say e.g. *play Bohemian Rhapsody*.
+
+Add future commands by dropping a module under `commands/` and appending it to `REGISTERED` in `commands/__init__.py`.
 
 ## Run
 
@@ -126,4 +155,4 @@ Ctrl-C in the main window only stops the timing view — services keep running (
 ## Not done yet
 
 - Robust barge-in while speakers are loud (echo)
-- Home Assistant / tools / avatar / Pi deploy
+- Home Assistant / weather / avatar / Pi deploy

@@ -32,7 +32,7 @@ We are **not** building one monolithic script. Each stage of the pipeline is an 
 | `tts` | Text → speech; sentence queue so streamed brain chunks play in order; interrupt via MQTT | **Kokoro** (`kokoro-onnx`) |
 | `home-control` | Executes smart home actions | **Home Assistant** REST/websocket API |
 | `avatar` | Animates a face/avatar on the screen, synced to speaking state | Web-based (HTML/Canvas), Rive/Lottie or Live2D for lip-sync |
-| `web-tools` | Real-time web search + weather, exposed to `brain` as callable tools | **Brave Search API** or **SerpAPI** (search), **Open-Meteo** (weather, free, no key) |
+| `web-tools` | Real-time web search + weather | **Tavily** search is in `brain/commands` today; weather still TODO (**Open-Meteo**) |
 | *(optional)* `speaker-id` | Identifies who is talking | **Resemblyzer** or **pyannote-audio** |
 
 ---

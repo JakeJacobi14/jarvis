@@ -29,19 +29,23 @@ def model_name() -> str:
     return "?"
 
 
-def stream_chat(messages: list[dict]) -> Iterator[str]:
+def stream_chat(
+    messages: list[dict], *, max_tokens: int | None = None
+) -> Iterator[str]:
     p = provider_name()
     if p == "groq":
-        yield from _stream_groq(messages)
+        yield from _stream_groq(messages, max_tokens=max_tokens)
     elif p == "ollama":
-        yield from _stream_ollama(messages)
+        yield from _stream_ollama(messages, max_tokens=max_tokens)
     else:
         raise ValueError(
             f"Unknown JARVIS_LLM_PROVIDER={p!r} (expected 'groq' or 'ollama')"
         )
 
 
-def _stream_groq(messages: list[dict]) -> Iterator[str]:
+def _stream_groq(
+    messages: list[dict], *, max_tokens: int | None = None
+) -> Iterator[str]:
     api_key = os.environ.get("GROQ_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError(
@@ -51,7 +55,8 @@ def _stream_groq(messages: list[dict]) -> Iterator[str]:
     model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
     url = os.environ.get("GROQ_BASE_URL", GROQ_URL)
     # Voice: keep replies short; low reasoning avoids long silent "think" time.
-    max_tokens = int(os.environ.get("JARVIS_MAX_TOKENS", "50"))
+    if max_tokens is None:
+        max_tokens = int(os.environ.get("JARVIS_MAX_TOKENS", "50"))
     effort = os.environ.get("GROQ_REASONING_EFFORT", "low")
 
     payload = {
@@ -97,10 +102,13 @@ def _stream_groq(messages: list[dict]) -> Iterator[str]:
                 yield piece
 
 
-def _stream_ollama(messages: list[dict]) -> Iterator[str]:
+def _stream_ollama(
+    messages: list[dict], *, max_tokens: int | None = None
+) -> Iterator[str]:
     url = os.environ.get("OLLAMA_URL", OLLAMA_URL)
     model = os.environ.get("OLLAMA_MODEL", "llama3.2:3b")
-    max_tokens = int(os.environ.get("JARVIS_MAX_TOKENS", "60"))
+    if max_tokens is None:
+        max_tokens = int(os.environ.get("JARVIS_MAX_TOKENS", "60"))
 
     payload = {
         "model": model,
