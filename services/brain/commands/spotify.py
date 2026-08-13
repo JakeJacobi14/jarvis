@@ -1,7 +1,8 @@
 """Spotify playback via Web API.
 
 Triggers:
-  play … / put on … / spotify …
+  play … / put on … / spotify … (including mid-sentence after STT junk)
+  can you play …
   pause / stop music / resume / skip / next / previous
 """
 from __future__ import annotations
@@ -10,16 +11,35 @@ import re
 
 from commands.base import Command, CommandResult
 
+# Leading junk STT sometimes prepends ("service. Play …", "plague play …")
 _PLAY = re.compile(
-    r"""^\s*
-        (?:hey\s+jarvis[,.]?\s+)?
+    r"""
+        (?:^|.*?\b)
         (?:please\s+)?
         (?:
+            (?:can|could|would)\s+you\s+(?:please\s+)?play(?:\s+me)? |
             play(?:\s+me)? |
             put\s+on |
             spotify
         )
         \s+(?P<q>.+?)
+        \s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Bare "play music" / "play a song" with no title
+_PLAY_GENERIC = re.compile(
+    r"""
+        (?:^|.*?\b)
+        (?:please\s+)?
+        (?:can|could|would)\s+you\s+(?:please\s+)?play
+        (?:\s+(?:some\s+)?(?:music|songs?|something))?
+        \s*$
+    |
+        (?:^|.*?\b)
+        (?:please\s+)?play
+        \s+(?:some\s+)?(?:music|songs?|something|a\s+song)
         \s*$
     """,
     re.IGNORECASE | re.VERBOSE,
@@ -50,6 +70,17 @@ _TRAILING_FILLER = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+_GENERIC_QUERIES = {
+    "music",
+    "some music",
+    "a song",
+    "songs",
+    "some songs",
+    "something",
+    "something good",
+    "my music",
+}
+
 
 def _clean_play_query(q: str) -> str:
     q = (q or "").strip(" .?!,")
@@ -58,12 +89,59 @@ def _clean_play_query(q: str) -> str:
 
 
 _CONTROL = [
-    (re.compile(p, re.IGNORECASE), action)
+    (re.compile(p, re.IGNORECASE | re.VERBOSE), action)
     for p, action in (
-        (r"^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?(?:pause(?:\s+music|\s+spotify)?|stop(?:\s+music|\s+spotify)?|halt)\s*[.!]?\s*$", "pause"),
-        (r"^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?(?:resume(?:\s+music|\s+spotify)?|continue(?:\s+music)?|unpause)\s*[.!]?\s*$", "resume"),
-        (r"^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?(?:skip(?:\s+(?:this\s+)?(?:song|track))?|next(?:\s+song|\s+track)?)\s*[.!]?\s*$", "next"),
-        (r"^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?(?:previous(?:\s+song|\s+track)?|last\s+song|go\s+back)\s*[.!]?\s*$", "previous"),
+        (
+            r"""
+            (?:^|.*?\b)
+            (?:please\s+)?
+            (?:
+                pause(?:\s+(?:the\s+)?(?:music|song|track|spotify))? |
+                stop(?:\s+(?:the\s+)?(?:music|song|track|spotify|playing))? |
+                halt
+            )
+            \s*[.!]?\s*$
+            """,
+            "pause",
+        ),
+        (
+            r"""
+            (?:^|.*?\b)
+            (?:please\s+)?
+            (?:
+                resume(?:\s+(?:the\s+)?(?:music|song|spotify))? |
+                continue(?:\s+(?:the\s+)?(?:music|song))? |
+                unpause
+            )
+            \s*[.!]?\s*$
+            """,
+            "resume",
+        ),
+        (
+            r"""
+            (?:^|.*?\b)
+            (?:please\s+)?
+            (?:
+                skip(?:\s+(?:this\s+)?(?:song|track))? |
+                next(?:\s+(?:song|track))?
+            )
+            \s*[.!]?\s*$
+            """,
+            "next",
+        ),
+        (
+            r"""
+            (?:^|.*?\b)
+            (?:please\s+)?
+            (?:
+                previous(?:\s+(?:song|track))? |
+                last\s+song |
+                go\s+back
+            )
+            \s*[.!]?\s*$
+            """,
+            "previous",
+        ),
     )
 ]
 
@@ -76,13 +154,22 @@ class SpotifyCommand(Command):
         if not raw:
             return None
 
+        # Common Ink-2 mishear: "play" → "plague"
+        raw = re.sub(r"\bplague\b", "play", raw, flags=re.IGNORECASE)
+
         for pat, action in _CONTROL:
             if pat.match(raw):
                 return CommandResult(label=self.name, spotify_action=action)
 
-        m = _PLAY.match(raw)
+        # "play music" with no title → resume / ask
+        if _PLAY_GENERIC.search(raw):
+            return CommandResult(label=self.name, spotify_action="resume_or_ask")
+
+        m = _PLAY.search(raw)
         if m:
             q = _clean_play_query(m.group("q"))
+            if q.lower() in _GENERIC_QUERIES:
+                return CommandResult(label=self.name, spotify_action="resume_or_ask")
             if q and not _PLAY_BLOCKLIST.match(q):
                 return CommandResult(label=self.name, spotify_query=q)
 

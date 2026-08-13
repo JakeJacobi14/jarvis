@@ -153,6 +153,24 @@ _NOT_ARTIST = {
 }
 
 
+def _norm(text: str) -> str:
+    text = (text or "").lower()
+    text = re.sub(r"\([^)]*\)", " ", text)  # drop (feat. …) / remaster tags noise
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _similarity(a: str, b: str) -> float:
+    from difflib import SequenceMatcher
+
+    na, nb = _norm(a), _norm(b)
+    if not na or not nb:
+        return 0.0
+    if na == nb:
+        return 1.0
+    return SequenceMatcher(None, na, nb).ratio()
+
+
 def _search_tracks(q: str, *, limit: int = 5) -> list[dict[str, Any]]:
     resp = _request(
         "GET",
@@ -164,33 +182,84 @@ def _search_tracks(q: str, *, limit: int = 5) -> list[dict[str, Any]]:
     return list(((resp.json() or {}).get("tracks") or {}).get("items") or [])
 
 
-def _artist_matches(track: dict[str, Any], wanted: str) -> bool:
-    wanted_l = wanted.lower().strip()
-    if not wanted_l:
-        return False
-    for a in track.get("artists") or []:
-        name = (a.get("name") or "").lower().strip()
-        if not name:
+def _artist_names(track: dict[str, Any]) -> list[str]:
+    return [a.get("name") or "" for a in (track.get("artists") or []) if a.get("name")]
+
+
+def _artist_score(track: dict[str, Any], wanted: str) -> float:
+    """Fuzzy artist match — handles STT typos like Forest → Forrest."""
+    wanted_n = _norm(wanted)
+    if not wanted_n:
+        return 0.0
+    names = _artist_names(track)
+    if not names:
+        return 0.0
+    scores = [_similarity(n, wanted) for n in names]
+    scores.append(_similarity(" ".join(names), wanted))
+    # Token overlap helps "Forrest Frank, Forrest." vs "Forrest Frank"
+    wanted_tokens = set(wanted_n.split())
+    for n in names:
+        name_tokens = set(_norm(n).split())
+        if wanted_tokens and name_tokens:
+            overlap = len(wanted_tokens & name_tokens) / len(wanted_tokens)
+            scores.append(overlap)
+        # Partial last-name / first-name: require high ratio on best token pair
+        for wt in wanted_tokens:
+            best = max((_similarity(wt, nt) for nt in name_tokens), default=0.0)
+            if len(wt) >= 4:
+                scores.append(best * 0.95)
+    return max(scores) if scores else 0.0
+
+
+def _track_score(track: dict[str, Any], wanted_title: str) -> float:
+    name = track.get("name") or ""
+    base = _similarity(name, wanted_title)
+    # Prefer titles that start with / contain the requested title
+    nn, nw = _norm(name), _norm(wanted_title)
+    if nw and nn.startswith(nw):
+        base = max(base, 0.95)
+    elif nw and nw in nn:
+        base = max(base, 0.88)
+    return base
+
+
+def _pick_best(
+    candidates: list[dict[str, Any]],
+    *,
+    title: str,
+    artist: str | None,
+    min_artist: float = 0.72,
+    min_title: float = 0.45,
+) -> dict[str, Any] | None:
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for item in candidates:
+        t_score = _track_score(item, title) if title else 0.5
+        a_score = _artist_score(item, artist) if artist else 1.0
+        if artist and a_score < min_artist:
             continue
-        if wanted_l == name:
-            return True
-        if name.startswith("the ") and wanted_l == name[4:]:
-            return True
-        if wanted_l.startswith("the ") and name == wanted_l[4:]:
-            return True
-        # Whole-word containment (avoids "me" matching "Meg")
-        if re.search(rf"\b{re.escape(wanted_l)}\b", name):
-            return True
-        if len(wanted_l) >= 4 and wanted_l in name:
-            return True
-    return False
+        if title and t_score < min_title and artist:
+            # With a named artist, allow slightly weaker title if artist is strong
+            if a_score < 0.9 or t_score < 0.3:
+                continue
+        score = (a_score * 2.2) + (t_score * 1.5)
+        pop = item.get("popularity")
+        if isinstance(pop, int):
+            score += pop / 200.0
+        scored.append((score, item))
+    if not scored:
+        return None
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored[0][1]
 
 
 def search_track(query: str) -> dict[str, Any] | None:
-    """Find a track. Parses 'Song by Artist' into Spotify field filters."""
+    """Find a track. Parses 'Song by Artist' and fuzzy-matches STT typos."""
     raw = (query or "").strip()
     if not raw:
         return None
+
+    title = raw
+    artist: str | None = None
 
     m = _BY_ARTIST.match(raw)
     if m:
@@ -202,37 +271,56 @@ def search_track(query: str) -> dict[str, Any] | None:
             and len(artist_q) >= 2
         )
         if looks_like_artist:
-            # "play something by Queen" → top track for that artist
+            title, artist = track_q, artist_q
             if track_q.lower() in _ARTIST_ONLY_TRACK:
-                items = _search_tracks(f'artist:"{artist_q}"', limit=1)
+                items = _search_tracks(f'artist:"{artist_q}"', limit=5)
                 return items[0] if items else None
 
-            # Prefer structured filters so we get the right artist.
-            for candidate_q in (
-                f'track:"{track_q}" artist:"{artist_q}"',
-                f"{track_q} artist:{artist_q}",
-            ):
-                for item in _search_tracks(candidate_q, limit=5):
-                    if _artist_matches(item, artist_q):
-                        return item
+    # Gather candidates from several query shapes; score instead of taking [0].
+    queries: list[str] = []
+    if artist:
+        queries.extend(
+            [
+                f'track:"{title}" artist:"{artist}"',
+                f"{title} artist:{artist}",
+                f"{title} {artist}",
+                f'track:"{title}"',
+                title,
+            ]
+        )
+    else:
+        queries.extend([f'track:"{title}"', title, raw])
 
-            # Structured miss → raw fallback below (also covers odd STT).
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for q in queries:
+        for item in _search_tracks(q, limit=10):
+            uri = item.get("uri") or ""
+            if not uri or uri in seen:
+                continue
+            seen.add(uri)
+            candidates.append(item)
 
-    items = _search_tracks(raw, limit=1)
-    return items[0] if items else None
+    picked = _pick_best(candidates, title=title, artist=artist)
+    if picked:
+        return picked
+
+    # Artist was specified but nothing matched closely — don't play a random hit.
+    if artist:
+        return None
+
+    return candidates[0] if candidates else None
 
 
 def play_query(query: str) -> str:
     """Search for a track and start playback. Returns a spoken confirmation."""
     track = search_track(query)
     if not track:
-        return f"I couldn't find anything for {query}."
+        return f"I couldn't find that track. Try saying the song and artist again."
 
     uri = track.get("uri")
     name = track.get("name") or query
-    artists = ", ".join(
-        a.get("name", "") for a in (track.get("artists") or []) if a.get("name")
-    )
+    artists = ", ".join(_artist_names(track))
     label = f"{name} by {artists}" if artists else name
 
     device_id = _ensure_device()
@@ -253,7 +341,19 @@ def play_query(query: str) -> str:
 
 
 def control(action: str) -> str:
-    """pause | resume | next | previous → spoken confirmation."""
+    """pause | resume | next | previous | resume_or_ask → spoken confirmation."""
+    if action == "resume_or_ask":
+        # Try resuming; if nothing is active, ask for a song instead of failing.
+        try:
+            device_id = _ensure_device()
+        except SpotifyError:
+            return "What song should I play?"
+        params = {"device_id": device_id} if device_id else None
+        resp = _request("PUT", "/me/player/play", params=params)
+        if resp.status_code in (204, 200, 202):
+            return "Resuming."
+        return "What song should I play?"
+
     device_id = None
     try:
         device_id = _ensure_device()
