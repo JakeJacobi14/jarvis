@@ -64,12 +64,13 @@ def chunk_loudness(chunk) -> float:
     return float(np.sqrt(np.mean(samples**2)))
 
 
-def publish_text(full_text: str, *, elapsed: float):
+def publish_text(full_text: str, *, elapsed: float, source: str = "wake"):
     if not is_real_utterance(full_text):
         ts(f"ignored non-speech in {elapsed:.2f}s: {full_text!r}")
         return
-    ts(f"done in {elapsed:.2f}s → {full_text!r}")
-    mqtt_client.publish("jarvis/stt/text", full_text)
+    topic = "jarvis/stt/followup" if source == "followup" else "jarvis/stt/text"
+    ts(f"done in {elapsed:.2f}s [{source}] → {full_text!r}")
+    mqtt_client.publish(topic, full_text)
 
 
 mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -196,7 +197,7 @@ def cartesia_listen_followup():
         if not text:
             ts("no follow-up — back to wake word")
             return
-        publish_text(text, elapsed=elapsed)
+        publish_text(text, elapsed=elapsed, source="followup")
     except Exception as e:
         ts(f"error: {e}")
     finally:
@@ -290,7 +291,18 @@ def whisper_record_followup():
             return
 
         audio = recorder.stop()
-        whisper_transcribe_async(audio)
+        # Follow-up uses a tagged publish path
+        if len(audio) == 0:
+            return
+        audio_secs = len(audio) / recorder.sample_rate
+        ts(f"transcribing {audio_secs:.2f}s of audio [followup]...")
+        t0 = time.perf_counter()
+        segments, _ = whisper_model.transcribe(
+            audio, language="en", beam_size=1, vad_filter=True
+        )
+        elapsed = time.perf_counter() - t0
+        full_text = " ".join(seg.text.strip() for seg in segments).strip()
+        publish_text(full_text, elapsed=elapsed, source="followup")
     finally:
         _wake_busy = False
 

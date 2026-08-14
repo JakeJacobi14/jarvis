@@ -63,6 +63,9 @@ Extensible registry in `services/brain/commands/`. First match wins.
 | `what day/time/date is it` | local clock (no web) |
 | `play …` / `put on …` | Spotify search + play (Premium + auth) |
 | `pause` / `resume` / `skip` / `next` / `previous` | Spotify playback control |
+| `nevermind` / `shut up` / `stop talking` / `quiet down` | cancel silently (interrupt, no “okay”) |
+
+After Jarvis answers, follow-up speech (no wake word) is only answered if it looks addressed to him (thanks, questions, commands). Side chatter is ignored.
 
 **Spotify setup:** create a [Spotify developer app](https://developer.spotify.com/dashboard), add redirect URI `http://127.0.0.1:8732/callback`, put `SPOTIFY_CLIENT_ID` + `SPOTIFY_CLIENT_SECRET` in `.env`, then:
 
@@ -147,7 +150,8 @@ Ctrl-C in the main window only stops the timing view — services keep running (
 |---|---|
 | `jarvis/wake/detected` | wake → STT |
 | `jarvis/tts/interrupt` | wake → TTS (barge-in) |
-| `jarvis/stt/text` | STT → brain |
+| `jarvis/stt/text` | STT → brain (wake word / PTT) |
+| `jarvis/stt/followup` | STT → brain (post-answer listen; ignored if not addressed to Jarvis) |
 | `jarvis/brain/reset` | bench → brain (clear conversation memory) |
 | `jarvis/brain/response` | brain → TTS (one sentence per message when streaming) |
 | `jarvis/tts/response` | TTS → `done` when queue drains |

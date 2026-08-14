@@ -6,6 +6,7 @@ from pathlib import Path
 
 from commands import match_command
 from commands.search import looks_like_fact_question
+from addressed import is_addressed_to_jarvis
 from llm import model_name, provider_name, stream_chat
 import spotify_client
 import tavily_client
@@ -252,9 +253,25 @@ def _handle_spotify(cmd, *, t0: float) -> str:
     return _speak_direct(reply, t0=t0)
 
 
-def query_brain(user_text: str):
+def query_brain(user_text: str, *, source: str = "wake"):
     t0 = time.perf_counter()
     cmd = match_command(user_text)
+
+    # nevermind / shut up / stop talking — interrupt and stay silent
+    if cmd is not None and cmd.silent:
+        client.publish("jarvis/tts/interrupt", "stop")
+        ts(f"command={cmd.label} silent cancel ← {user_text!r} [{source}]")
+        return
+
+    # Follow-up window: ignore side chatter not directed at Jarvis
+    if source == "followup":
+        if cmd is not None:
+            pass  # play / search / time / etc. — clearly for Jarvis
+        elif not is_addressed_to_jarvis(user_text):
+            ts(f"ignored follow-up (not addressed) ← {user_text!r}")
+            return
+        else:
+            ts(f"follow-up addressed ← {user_text!r}")
 
     if cmd is not None and cmd.direct_reply:
         ts(f"command={cmd.label} ← {user_text!r}")
@@ -316,9 +333,10 @@ def on_message(client, userdata, msg):
     if msg.topic == "jarvis/brain/reset":
         reset_memory()
         return
-    ts(f"received STT text ← {text!r}")
+    source = "followup" if msg.topic == "jarvis/stt/followup" else "wake"
+    ts(f"received STT text [{source}] ← {text!r}")
     try:
-        query_brain(text)
+        query_brain(text, source=source)
     except Exception as e:
         ts(f"error: {e}")
         try:
@@ -329,10 +347,14 @@ def on_message(client, userdata, msg):
 
 client.on_message = on_message
 client.subscribe("jarvis/stt/text")
+client.subscribe("jarvis/stt/followup")
 client.subscribe("jarvis/brain/reset")
 client.loop_start()
 
-ts(f"listening on jarvis/stt/text... provider={provider_name()} model={model_name()}")
+ts(
+    f"listening on jarvis/stt/text + followup... "
+    f"provider={provider_name()} model={model_name()}"
+)
 try:
     while True:
         time.sleep(1)

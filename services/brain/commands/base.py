@@ -20,6 +20,7 @@ class CommandResult:
     - search_query: run web search, then summarize via LLM.
     - spotify_query: search Spotify and play that track.
     - spotify_action: pause | resume | next | previous.
+    - silent: handle with no spoken reply (cancel / shut up).
     - label: short tag for timing logs (e.g. "search", "datetime").
     """
 
@@ -28,6 +29,7 @@ class CommandResult:
     search_query: str | None = None
     spotify_query: str | None = None
     spotify_action: str | None = None
+    silent: bool = False
 
 
 class Command:
