@@ -15,7 +15,6 @@ Local voice assistant pipeline over MQTT: wake word → STT → LLM brain → TT
 - ✅ Brain command system + Tavily web search (`google …` / `search …` / live-fact detect)
 - Step 8: Home Assistant + weather tools
 - Step 9: Avatar UI
-- Step 10: Real hardware
 
 ## Requirements
 
