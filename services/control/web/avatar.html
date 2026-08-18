@@ -5,18 +5,24 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#070b14">
-  <link rel="stylesheet" href="/app.css">
-  <title>Jarvis · Avatar</title>
+  <link rel="stylesheet" href="/app.css?v=2">
+  <title>Jarvis</title>
 </head>
 <body class="avatar-page is-idle">
   <a class="btn ghost back" href="/">Control</a>
-  <div class="stage">
-    <div class="rings"></div>
-    <div class="core"></div>
-    <div class="eyes"><div class="eye"></div><div class="eye"></div></div>
-    <div class="mouth"></div>
-    <img class="character" id="face" alt="Jarvis">
-    <div class="label" id="label">idle</div>
+  <div class="visor" id="visor">
+    <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <circle class="halo" cx="100" cy="100" r="88"/>
+      <circle class="ring" cx="100" cy="100" r="74"/>
+      <circle class="ring-dash" cx="100" cy="100" r="60"/>
+      <circle class="core-glow" cx="100" cy="100" r="30"/>
+      <circle class="core" cx="100" cy="100" r="20"/>
+      <rect class="eye" x="78" y="90" width="10" height="16" rx="3"/>
+      <rect class="eye" x="112" y="90" width="10" height="16" rx="3"/>
+      <path class="mouth" d="M86 118 Q100 130 114 118"/>
+    </svg>
+    <img class="character" id="face" alt="">
+    <div class="visor-label" id="label">idle</div>
   </div>
   <script>
     const face = document.getElementById("face");
@@ -43,9 +49,6 @@
         hasCharacter = true;
         face.src = idleSrc;
         face.classList.add("show");
-        document.querySelector(".core").style.opacity = "0.15";
-        document.querySelector(".eyes").style.display = "none";
-        document.querySelector(".mouth").style.display = "none";
       };
       idle.src = "/character/idle.png";
       const talk = new Image();

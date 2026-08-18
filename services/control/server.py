@@ -231,7 +231,7 @@ class Handler(SimpleHTTPRequestHandler):
             self._send(404, b"not found", "text/plain")
             return
         data = path.read_bytes()
-        extra = {"Cache-Control": "no-cache"} if path.suffix == ".html" else None
+        extra = {"Cache-Control": "no-cache"} if path.suffix in {".html", ".css"} else None
         self._send(200, data, content_type, extra)
 
     def do_HEAD(self):

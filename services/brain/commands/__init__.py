@@ -9,6 +9,7 @@ from commands.help_cmd import HelpCommand
 from commands.lights import LightsCommand
 from commands.repeat import RepeatCommand
 from commands.search import SearchCommand
+from commands.smalltalk import SmalltalkCommand
 from commands.spotify import SpotifyCommand
 from commands.timer import TimerCommand
 from commands.volume import VolumeCommand
@@ -18,6 +19,7 @@ from commands.weather import WeatherCommand
 REGISTERED: list[Command] = [
     CancelCommand(),
     RepeatCommand(),
+    SmalltalkCommand(),
     HelpCommand(),
     DateTimeCommand(),
     TimerCommand(),

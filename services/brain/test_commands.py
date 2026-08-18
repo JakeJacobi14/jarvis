@@ -15,6 +15,14 @@ def test_cancel():
     assert _label("stop talking") == "cancel"
 
 
+def test_smalltalk():
+    r = match_command("how are you today")
+    assert r is not None and r.label == "smalltalk"
+    assert r.direct_reply == "I'm good, sir."
+    assert _label("how's it going") == "smalltalk"
+    assert _label("how are you") == "smalltalk"
+
+
 def test_help():
     r = match_command("what can you do")
     assert r is not None and r.label == "help" and r.direct_reply

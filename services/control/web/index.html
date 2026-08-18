@@ -7,17 +7,30 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#070b14">
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/app.css?v=2">
   <title>Jarvis</title>
 </head>
-<body class="dashboard">
+<body class="dashboard is-idle">
   <div class="wrap">
     <div class="top">
-      <div>
-        <h1>Jarvis</h1>
-        <div class="sub" id="state">idle</div>
+      <h1>Jarvis</h1>
+      <a class="btn ghost" href="/avatar">Full screen</a>
+    </div>
+
+    <div class="card">
+      <div class="visor" id="visor">
+        <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <circle class="halo" cx="100" cy="100" r="88"/>
+          <circle class="ring" cx="100" cy="100" r="74"/>
+          <circle class="ring-dash" cx="100" cy="100" r="60"/>
+          <circle class="core-glow" cx="100" cy="100" r="30"/>
+          <circle class="core" cx="100" cy="100" r="20"/>
+          <rect class="eye" x="78" y="90" width="10" height="16" rx="3"/>
+          <rect class="eye" x="112" y="90" width="10" height="16" rx="3"/>
+          <path class="mouth" d="M86 118 Q100 130 114 118"/>
+        </svg>
+        <div class="visor-label" id="state">idle</div>
       </div>
-      <a class="btn ghost" href="/avatar">Avatar</a>
     </div>
 
     <div class="card" id="pin-card" hidden>
@@ -53,12 +66,19 @@
     const preview = $("preview");
     const pinCard = $("pin-card");
 
+    function setState(state) {
+      const next = state || "idle";
+      document.body.classList.remove("is-idle", "is-listening", "is-thinking", "is-speaking");
+      document.body.classList.add("is-" + next);
+      $("state").textContent = next;
+    }
+
     function setBusy(on) {
       ["start", "stop", "snap"].forEach((id) => { $(id).disabled = on; });
     }
 
     function renderStatus(data) {
-      $("state").textContent = data.state || "idle";
+      if (data.state) setState(data.state);
       const items = [
         ["voice", data.voice],
         ["broker", data.broker],
@@ -142,7 +162,7 @@
     es.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
-        if (data.state) $("state").textContent = data.state;
+        if (data.state) setState(data.state);
         if (data.status) renderStatus(data.status);
       } catch (_) {}
     };
