@@ -13,8 +13,8 @@ Local voice assistant pipeline over MQTT: wake word → STT → LLM brain → TT
 - ✅ Step 7: End-of-speech — Ink-2 turn detection (Whisper path keeps local energy VAD)
 - ✅ Conversation memory + listen-again after TTS
 - ✅ Brain command system + Tavily web search (`google …` / `search …` / live-fact detect)
-- Step 8: Home Assistant + weather tools
-- Step 9: Avatar UI
+- ✅ Weather (Open-Meteo), lights (WLED / Home Assistant), camera snap, timers, volume
+- ✅ Phone control panel + talking avatar (PWA on the LAN)
 
 ## Requirements
 
@@ -25,6 +25,7 @@ Local voice assistant pipeline over MQTT: wake word → STT → LLM brain → TT
   - Or local Kokoro if `JARVIS_TTS_PROVIDER=kokoro` / Whisper if `JARVIS_STT_PROVIDER=whisper`
 - **Tavily API key** (web search commands) — [app.tavily.com](https://app.tavily.com/home)
 - **Python 3.10+**, mic + speakers
+- Optional: **ffmpeg** (camera stills), a **WLED** strip or Home Assistant for lights
 ## Config
 
 ```bash
@@ -38,7 +39,7 @@ cp .env.example .env
 | `GROQ_API_KEY` | — | required for Groq |
 | `GROQ_MODEL` | `openai/gpt-oss-20b` | |
 | `GROQ_REASONING_EFFORT` | `low` | keep low for voice latency |
-| `JARVIS_MAX_TOKENS` | `80` | short spoken replies |
+| `JARVIS_MAX_TOKENS` | `50` | short spoken replies |
 | `TAVILY_API_KEY` | — | required for `google` / `search` commands |
 | `TAVILY_MAX_RESULTS` | `5` | hits fed into the spoken summary |
 | `SPOTIFY_CLIENT_ID` | — | Spotify developer app |
@@ -50,6 +51,11 @@ cp .env.example .env
 | `CARTESIA_VOICE_ID` | Archie (en-GB male) | [voice library](https://play.cartesia.ai/voices) |
 | `JARVIS_STT_PROVIDER` | `cartesia` | `cartesia` (Ink-2) or `whisper` |
 | `CARTESIA_STT_MODEL` | `ink-2` | streaming STT + turn detection |
+| `JARVIS_CITY` | — | home city for weather (or `JARVIS_LAT`/`JARVIS_LON`) |
+| `WLED_HOST` | — | RGB strip IP, e.g. `192.168.1.50` |
+| `HA_URL` / `HA_TOKEN` / `HA_LIGHT_ENTITY` | — | Home Assistant lights if not using WLED |
+| `JARVIS_CONTROL_PORT` | `8740` | phone panel + avatar |
+| `JARVIS_CONTROL_PIN` | — | optional PIN for the panel |
 
 ### Voice commands (brain)
 
@@ -59,9 +65,16 @@ Extensible registry in `services/brain/commands/`. First match wins.
 |---|---|
 | `google …` / `search …` / `look up …` | Tavily search → short spoken summary |
 | live / ranking / encyclopedic facts | auto-search via Tavily (with silent-reply fallback) |
+| `what's the weather` / `weather in …` | Open-Meteo forecast for home (`JARVIS_CITY`) or a named place |
 | `what day/time/date is it` | local clock (no web) |
 | `play …` / `put on …` | Spotify search + play (Premium + auth) |
 | `pause` / `resume` / `skip` / `next` / `previous` | Spotify playback control |
+| `turn on/off the lights` / `lights red` / `rainbow` | WLED strip or Home Assistant light |
+| `take a picture` / `what do you see` | one still from the camera; Groq vision describes it when asked |
+| `set a timer for 5 minutes` / `remind me in 30 seconds` | speaks when it fires (brain must stay running) |
+| `volume up/down` / `set volume to 40` / `mute` | macOS or Linux (pactl/wpctl) speaker volume |
+| `what can you do` / `help` | short capability list |
+| `what did you say` / `repeat that` | last reply again |
 | `nevermind` / `shut up` / `stop talking` / `quiet down` | cancel silently (interrupt, no “okay”) |
 
 After Jarvis answers, follow-up speech (no wake word) is only answered if it looks addressed to him (thanks, questions, commands). Side chatter is ignored.
@@ -74,16 +87,66 @@ cd services/brain && .venv/bin/python spotify_auth.py
 
 Open the Spotify app on a phone/computer (Premium), restart brain, then say e.g. *play Bohemian Rhapsody*.
 
-Add future commands by dropping a module under `commands/` and appending it to `REGISTERED` in `commands/__init__.py`.
+### Lights / RGB strips
+
+Cheapest path for a strip is **[WLED](https://kno.wled.ge/)** on an ESP32/ESP8266. Put its LAN IP in `WLED_HOST`. Then: *turn on the lights*, *lights blue*, *make the lights rainbow*, *dim the lights*.
+
+Philips Hue, Ikea, Tuya, etc. go through **Home Assistant**: set `HA_URL`, `HA_TOKEN`, and `HA_LIGHT_ENTITY`. WLED wins if both are set (better for color/effects).
+
+### Camera
+
+Say *take a picture* or *what do you see*. Needs `ffmpeg` (or `imagesnap` on macOS / `fswebcam` on Linux). Stills land in `captures/`. *What do you see* also sends the frame to Groq vision (`GROQ_VISION_MODEL`).
+
+### Phone panel + avatar (headless PC)
+
+The box does not need a monitor. The control panel binds to the LAN:
+
+```bash
+./start.sh --control     # panel only, so you can start him from a phone
+./start.sh --detach      # voice + panel, then exit (systemd / SSH)
+```
+
+On your phone, open `http://<pc-ip>:8740`. Start / Stop the voice stack, take a photo, watch the timing log. `/avatar` is a full-screen talking visor — drop `idle.png` + `talk.png` into `services/control/web/character/` to use your own 2D model (mouth-open vs idle). Add the URL to the home screen for a standalone “app”.
+
+Optional PIN: `JARVIS_CONTROL_PIN` in `.env`. Keep it on the apartment LAN; do not port-forward it.
+
+Linux box at boot:
+
+```bash
+./deploy/install-systemd.sh
+# optional: systemctl --user enable --now jarvis.service   # voice on boot
+sudo loginctl enable-linger $USER   # required if nobody logs into a GUI
+```
+
+`./stop.sh` stops the voice stack but **leaves the phone panel up**. `./stop.sh --all` stops the panel and broker too.
+
+### Add a custom command
+
+```python
+# services/brain/commands/ping.py
+from commands.base import Command, CommandResult
+
+class PingCommand(Command):
+    name = "ping"
+    def match(self, text: str) -> CommandResult | None:
+        if (text or "").strip().lower() in {"ping", "you there"}:
+            return CommandResult(label=self.name, direct_reply="Here.")
+        return None
+```
+
+Import it and append `PingCommand()` to `REGISTERED` in `commands/__init__.py` (order matters — first match wins). Use `direct_reply` to speak as-is, or `run=lambda: some_client.do()` to call an API and speak the returned string.
 
 ## Run
 
 ```bash
 ./start.sh              # macOS: Terminal per service; Linux: background + logs/
-./start.sh --bg         # background everywhere → logs/*.log
+./start.sh --bg         # background everywhere → logs/*.log (stays on timing feed)
+./start.sh --detach     # background + phone panel, then exit
+./start.sh --control    # phone panel only
 ./start.sh --setup      # venvs + TTS models only
-./stop.sh               # stop Python services
+./stop.sh               # stop Python voice services (panel stays up)
 ./stop.sh --broker      # also stop Mosquitto
+./stop.sh --all         # voice + panel + broker
 ```
 
 On macOS you can also double-click **`Jarvis.command`**.
@@ -97,21 +160,21 @@ git clone https://github.com/JakeJacobi14/jarvis.git
 cd jarvis
 cp .env.example .env
 # edit .env → set GROQ_API_KEY and CARTESIA_API_KEY (his own keys)
-sudo apt install portaudio19-dev python3-venv   # Debian/Ubuntu; see below
-./start.sh              # uses --bg automatically on Linux
-tail -f logs/timing.log # watch the pipeline
+sudo apt install portaudio19-dev python3-venv ffmpeg   # Debian/Ubuntu; see below
+./start.sh --detach
+# phone: http://<this-box-ip>:8740
 ```
 
 You may also need PortAudio for mic/speakers:
 
 ```bash
 # Debian/Ubuntu
-sudo apt install portaudio19-dev python3-venv
+sudo apt install portaudio19-dev python3-venv ffmpeg
 # Fedora
-sudo dnf install portaudio-devel
+sudo dnf install portaudio-devel ffmpeg
 ```
 
-`Jarvis.command` and Terminal auto-open are macOS-only; on Linux use `./start.sh` (background) or run each service in your own terminals.
+`Jarvis.command` and Terminal auto-open are macOS-only; on Linux use `./start.sh --detach` (or `./start.sh` for a live timing feed).
 
 ## Benchmark (LLM + TTS)
 
@@ -154,8 +217,13 @@ Ctrl-C in the main window only stops the timing view — services keep running (
 | `jarvis/brain/reset` | bench → brain (clear conversation memory) |
 | `jarvis/brain/response` | brain → TTS (one sentence per message when streaming) |
 | `jarvis/tts/response` | TTS → `done` when queue drains |
+| `jarvis/status/tts` | TTS → `speaking` / `idle` (avatar) |
+| `jarvis/status/stt` | STT/wake → `listening` / `idle` (avatar) |
+| `jarvis/status/brain` | brain → `thinking` / `idle` (avatar) |
+| `jarvis/camera/snap` | phone/other → brain (take a still; optional JSON `{"describe":true}`) |
 
 ## Not done yet
 
 - Robust barge-in while speakers are loud (echo)
-- Home Assistant / weather / avatar / Pi deploy
+- Live2D / Rive lip-sync (PNG pair on `/avatar` is the current 2D path)
+- Per-room devices, Hue-direct (use HA or WLED for now)

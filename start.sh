@@ -4,7 +4,9 @@
 # Usage:
 #   ./start.sh            # Mac: Terminal windows per service; Linux: background + logs
 #   ./start.sh --open     # force Terminal windows (macOS only)
-#   ./start.sh --bg       # background + logs/*.log
+#   ./start.sh --bg       # background + logs/*.log (stays attached to timing feed)
+#   ./start.sh --detach   # background voice + phone panel, then exit (headless / systemd)
+#   ./start.sh --control  # phone panel only (no voice)
 #   ./start.sh --setup    # only create/update venvs, then exit
 #   ./start.sh --help
 set -euo pipefail
@@ -18,12 +20,37 @@ TIMING_LOG="$LOG_DIR/timing.log"
 mkdir -p "$LOG_DIR" "$PID_DIR"
 export JARVIS_TIMING_LOG="$TIMING_LOG"
 
-# Load repo .env into this process (and children) without overriding existing exports.
+# Load KEY=VALUE from .env without `source` (commas/spaces in values must not run as commands).
+load_dotenv() {
+  local path="$1" raw line key val
+  [[ -f "$path" ]] || return 0
+  while IFS= read -r raw || [[ -n "$raw" ]]; do
+    line="${raw%$'\r'}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    [[ "$line" == *=* ]] || continue
+    key="${line%%=*}"
+    val="${line#*=}"
+    key="${key%"${key##*[![:space:]]}"}"
+    key="${key#"${key%%[![:space:]]*}"}"
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    val="${val#"${val%%[![:space:]]*}"}"
+    val="${val%"${val##*[![:space:]]}"}"
+    if [[ ${#val} -ge 2 ]]; then
+      if [[ "$val" == \"*\" ]]; then
+        val="${val:1:${#val}-2}"
+      elif [[ "$val" == \'*\' ]]; then
+        val="${val:1:${#val}-2}"
+      fi
+    fi
+    if [[ -z "${!key+x}" ]]; then
+      export "$key=$val"
+    fi
+  done < "$path"
+}
+
 if [[ -f "$ROOT/.env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "$ROOT/.env"
-  set +a
+  load_dotenv "$ROOT/.env"
   echo "==> Loaded .env"
 fi
 
@@ -38,10 +65,12 @@ fi
 for arg in "$@"; do
   case "$arg" in
     --bg|-b) MODE="bg" ;;
+    --detach|-d) MODE="detach" ;;
+    --control|-c) MODE="control" ;;
     --setup|-s) MODE="setup" ;;
     --open|-o) MODE="open" ;;
     --help|-h)
-      sed -n '2,11p' "$0"
+      sed -n '2,14p' "$0"
       exit 0
       ;;
     *)
@@ -100,6 +129,46 @@ ensure_all_venvs() {
     IFS='|' read -r _ dir _ <<<"$entry"
     ensure_venv "$dir"
   done
+  ensure_venv "control"
+}
+
+pid_alive() {
+  local name="$1"
+  local pidfile="$PID_DIR/$name.pid"
+  local pid
+  [[ -f "$pidfile" ]] || return 1
+  pid="$(cat "$pidfile")"
+  kill -0 "$pid" 2>/dev/null
+}
+
+lan_ip() {
+  if [[ "$OS" == "Darwin" ]]; then
+    ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "localhost"
+  else
+    hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost"
+  fi
+}
+
+print_control_url() {
+  local port="${JARVIS_CONTROL_PORT:-8740}"
+  echo
+  echo "Phone panel:  http://$(lan_ip):$port"
+  echo "Avatar:       http://$(lan_ip):$port/avatar"
+  echo "Add that URL to your phone home screen for a full-screen app."
+}
+
+ensure_control() {
+  if [[ "${JARVIS_SKIP_CONTROL:-}" == "1" ]]; then
+    return
+  fi
+  ensure_venv "control"
+  if pid_alive "control"; then
+    echo "==> Control panel already running"
+    print_control_url
+    return
+  fi
+  start_service_bg "control" "control" "server.py"
+  print_control_url
 }
 
 ensure_broker() {
@@ -233,6 +302,11 @@ start_service_bg() {
   local logfile="$LOG_DIR/$name.log"
   local pidfile="$PID_DIR/$name.pid"
 
+  if pid_alive "$name"; then
+    echo "==> $name already running (pid $(cat "$pidfile"))"
+    return
+  fi
+
   echo "==> Starting $name (background)..."
   : >"$logfile"
   (
@@ -281,6 +355,12 @@ ensure_tts_models
 
 if [[ "$MODE" == "setup" ]]; then
   echo "Setup complete. Venvs are ready under services/*/.venv"
+  exit 0
+fi
+
+if [[ "$MODE" == "control" ]]; then
+  ensure_control
+  echo "Voice stack not started. Use ./start.sh --detach when you want him listening."
   exit 0
 fi
 
@@ -333,6 +413,17 @@ else
   echo "  Full logs:   tail -f logs/*.log"
   echo "  Stop all:    ./stop.sh"
   echo "  Stop + broker: ./stop.sh --broker"
+  echo "  Stop + panel:  ./stop.sh --all"
+fi
+
+ensure_control
+
+if [[ "$MODE" == "detach" ]]; then
+  echo
+  echo "Detached. Voice is running in the background."
+  echo "  Stop voice:  ./stop.sh"
+  echo "  Stop panel:  ./stop.sh --all"
+  exit 0
 fi
 
 watch_timing

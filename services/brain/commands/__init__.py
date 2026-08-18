@@ -2,15 +2,29 @@
 from __future__ import annotations
 
 from commands.base import Command, CommandResult
+from commands.camera import CameraCommand
 from commands.cancel import CancelCommand
 from commands.datetime_cmd import DateTimeCommand
+from commands.help_cmd import HelpCommand
+from commands.lights import LightsCommand
+from commands.repeat import RepeatCommand
 from commands.search import SearchCommand
 from commands.spotify import SpotifyCommand
+from commands.timer import TimerCommand
+from commands.volume import VolumeCommand
+from commands.weather import WeatherCommand
 
 # First match wins. Cancel/silence before anything that might speak.
 REGISTERED: list[Command] = [
     CancelCommand(),
+    RepeatCommand(),
+    HelpCommand(),
     DateTimeCommand(),
+    TimerCommand(),
+    VolumeCommand(),
+    LightsCommand(),
+    CameraCommand(),
+    WeatherCommand(),
     SpotifyCommand(),
     SearchCommand(),
 ]

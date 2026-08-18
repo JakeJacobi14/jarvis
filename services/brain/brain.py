@@ -1,5 +1,7 @@
 from datetime import datetime
+import json
 import paho.mqtt.client as mqtt
+import threading
 import time
 import os
 from pathlib import Path
@@ -8,6 +10,7 @@ from commands import match_command
 from commands.search import looks_like_fact_question
 from addressed import is_addressed_to_jarvis
 from llm import model_name, provider_name, stream_chat
+import camera_client
 import spotify_client
 import tavily_client
 
@@ -44,12 +47,13 @@ Default: answer in ONE short sentence. Only add a second if he clearly needs mor
 Under 18 words unless he asks for detail.
 Plain ASCII punctuation only. No lists, markdown, emoji, or stage directions.
 
-Tone: calm, dry, efficient. Be direct first and use a little wit is when it would be fun —
+Tone: calm, dry, efficient. Be direct first. A little wit is fine when it lands —
 do not force jokes, roasts, punchlines, or a corny second line after every answer.
 No lectures, no refusals, no "as an AI".
 
-You CAN play music on Spotify when he asks (play, pause, skip, etc.). Never say you
-cannot play music. If a play request is unclear, ask what song he wants.
+You can play Spotify, search the web, check the weather, control lights,
+take a photo, set timers, and change speaker volume. Never claim you cannot
+do those. If a request is unclear, ask one short clarifying question.
 
 When web search results are provided, answer ONLY from those facts. Do not invent.
 If the facts are incomplete, say what you found — never go silent.
@@ -59,6 +63,7 @@ SEARCH_MAX_TOKENS = int(os.environ.get("JARVIS_SEARCH_MAX_TOKENS", "120"))
 EMPTY_FALLBACK = "I blanked on that. Try asking again."
 
 messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+last_spoken = ""
 
 # Fancy punctuation → speakable ASCII (defense in depth for TTS).
 _SPEAKABLE = str.maketrans(
@@ -108,7 +113,12 @@ def ts(msg: str):
             pass
 
 
+def publish_status(state: str):
+    client.publish("jarvis/status/brain", state)
+
+
 def publish_sentence(sentence: str, *, first: bool, t0: float):
+    global last_spoken
     sentence = speakable(sentence).strip()
     if not sentence:
         return False
@@ -117,6 +127,7 @@ def publish_sentence(sentence: str, *, first: bool, t0: float):
         ts(f"first sentence in {elapsed:.2f}s → {sentence!r}")
     else:
         ts(f"sentence (+{elapsed:.2f}s) → {sentence!r}")
+    last_spoken = sentence
     client.publish("jarvis/brain/response", sentence)
     return True
 
@@ -132,6 +143,7 @@ def _trim_memory():
 def _stream_and_publish(
     chat_messages: list[dict], *, t0: float, max_tokens: int | None = None
 ) -> str:
+    global last_spoken
     buffer = ""
     full = []
     published_any = False
@@ -155,11 +167,15 @@ def _stream_and_publish(
         ts(f"stream error: {e}")
         return ""
     ts(f"stream done in {time.perf_counter() - t0:.2f}s")
-    return "".join(full).strip()
+    result = "".join(full).strip()
+    if result:
+        last_spoken = speakable(result)
+    return result
 
 
 def _speak_direct(text: str, *, t0: float) -> str:
     """Publish a non-streamed reply as one or more sentences."""
+    global last_spoken
     published_any = False
     remaining = speakable(text).strip()
     while remaining:
@@ -172,7 +188,10 @@ def _speak_direct(text: str, *, t0: float) -> str:
         sentence, remaining = remaining[: idx + 1], remaining[idx + 1 :].lstrip()
         if publish_sentence(sentence, first=not published_any, t0=t0):
             published_any = True
-    return speakable(text).strip()
+    result = speakable(text).strip()
+    if result:
+        last_spoken = result
+    return result
 
 
 def _tavily_spoken_fallback(data: dict) -> str:
@@ -253,6 +272,44 @@ def _handle_spotify(cmd, *, t0: float) -> str:
     return _speak_direct(reply, t0=t0)
 
 
+def _remember(user_text: str, reply: str):
+    messages.append({"role": "user", "content": user_text})
+    if reply:
+        messages.append({"role": "assistant", "content": reply})
+    _trim_memory()
+
+
+def _handle_run(cmd, user_text: str, *, t0: float) -> str:
+    ts(f"command={cmd.label} ← {user_text!r}")
+    try:
+        reply = cmd.run() if cmd.run else ""
+    except Exception as e:
+        ts(f"command={cmd.label} error: {e}")
+        reply = "That didn't work just now."
+    spoken = _speak_direct(reply or "Done.", t0=t0)
+    _remember(user_text, spoken)
+    ts(f"command={cmd.label} done in {time.perf_counter() - t0:.2f}s")
+    return spoken
+
+
+def _handle_timer(cmd, user_text: str, *, t0: float) -> str:
+    seconds = int(cmd.payload.get("seconds") or 0)
+    confirm = cmd.payload.get("confirm") or "Timer set."
+    done = cmd.payload.get("done") or "Time's up."
+    ts(f"command=timer seconds={seconds} ← {user_text!r}")
+
+    def fire():
+        try:
+            _speak_direct(done, t0=time.perf_counter())
+        except Exception as e:
+            ts(f"timer fire error: {e}")
+
+    threading.Timer(seconds, fire).start()
+    spoken = _speak_direct(confirm, t0=t0)
+    _remember(user_text, spoken)
+    return spoken
+
+
 def query_brain(user_text: str, *, source: str = "wake"):
     t0 = time.perf_counter()
     cmd = match_command(user_text)
@@ -273,54 +330,60 @@ def query_brain(user_text: str, *, source: str = "wake"):
         else:
             ts(f"follow-up addressed ← {user_text!r}")
 
-    if cmd is not None and cmd.direct_reply:
-        ts(f"command={cmd.label} ← {user_text!r}")
+    publish_status("thinking")
+    try:
+        if cmd is not None and cmd.kind == "repeat":
+            ts(f"command=repeat ← {user_text!r}")
+            spoken = last_spoken or "I haven't said anything yet."
+            reply = _speak_direct(spoken, t0=t0)
+            _remember(user_text, reply)
+            return
+
+        if cmd is not None and cmd.kind == "timer":
+            _handle_timer(cmd, user_text, t0=t0)
+            return
+
+        if cmd is not None and cmd.run is not None:
+            _handle_run(cmd, user_text, t0=t0)
+            return
+
+        if cmd is not None and cmd.direct_reply:
+            ts(f"command={cmd.label} ← {user_text!r}")
+            reply = _speak_direct(cmd.direct_reply, t0=t0)
+            _remember(user_text, reply)
+            ts(f"command={cmd.label} done in {time.perf_counter() - t0:.2f}s")
+            return
+
+        if cmd is not None and (cmd.spotify_query or cmd.spotify_action):
+            reply = _handle_spotify(cmd, t0=t0)
+            _remember(user_text, reply)
+            return
+
+        if cmd is not None and cmd.search_query:
+            reply = _handle_search(user_text, cmd.search_query, t0=t0)
+            _remember(user_text, reply)
+            return
+
         messages.append({"role": "user", "content": user_text})
-        reply = _speak_direct(cmd.direct_reply, t0=t0)
-        if reply:
-            messages.append({"role": "assistant", "content": reply})
         _trim_memory()
-        ts(f"command={cmd.label} done in {time.perf_counter() - t0:.2f}s")
-        return
 
-    if cmd is not None and (cmd.spotify_query or cmd.spotify_action):
-        messages.append({"role": "user", "content": user_text})
-        reply = _handle_spotify(cmd, t0=t0)
-        if reply:
-            messages.append({"role": "assistant", "content": reply})
-        _trim_memory()
-        return
+        ts(f"request start [{provider_name()}/{model_name()}] ← {user_text!r}")
+        assistant_text = _stream_and_publish(messages, t0=t0)
 
-    if cmd is not None and cmd.search_query:
-        messages.append({"role": "user", "content": user_text})
-        reply = _handle_search(user_text, cmd.search_query, t0=t0)
-        if reply:
-            messages.append({"role": "assistant", "content": reply})
-        _trim_memory()
-        return
+        # Empty stream (common with tiny max_tokens + reasoning models) → web fallback
+        # for fact-like questions, otherwise speak a short apology so we never go quiet.
+        if not assistant_text:
+            ts("empty LLM reply")
+            if looks_like_fact_question(user_text) and tavily_client.api_key():
+                ts("retrying via web search")
+                assistant_text = _handle_search(user_text, user_text, t0=t0)
+            else:
+                assistant_text = _speak_direct(EMPTY_FALLBACK, t0=t0)
 
-    messages.append({"role": "user", "content": user_text})
-    _trim_memory()
-
-    ts(f"request start [{provider_name()}/{model_name()}] ← {user_text!r}")
-    assistant_text = _stream_and_publish(messages, t0=t0)
-
-    # Empty stream (common with tiny max_tokens + reasoning models) → web fallback
-    # for fact-like questions, otherwise speak a short apology so we never go quiet.
-    if not assistant_text:
-        ts("empty LLM reply")
-        if looks_like_fact_question(user_text) and tavily_client.api_key():
-            ts("retrying via web search")
-            # Pop the empty turn's user msg is already in memory; search path
-            # will append its own user+assistant — replace by searching now.
-            assistant_text = _handle_search(user_text, user_text, t0=t0)
-        else:
-            assistant_text = _speak_direct(EMPTY_FALLBACK, t0=t0)
-
-    if assistant_text:
-        # Avoid double-appending if search fallback already added assistant in
-        # memory via _handle_search path... _handle_search does NOT append.
-        messages.append({"role": "assistant", "content": assistant_text})
+        if assistant_text:
+            messages.append({"role": "assistant", "content": assistant_text})
+    finally:
+        publish_status("idle")
 
 
 def reset_memory():
@@ -332,6 +395,24 @@ def on_message(client, userdata, msg):
     text = msg.payload.decode()
     if msg.topic == "jarvis/brain/reset":
         reset_memory()
+        return
+    if msg.topic == "jarvis/camera/snap":
+        ts("camera snap requested (MQTT)")
+        try:
+            describe = False
+            if text and text.strip().startswith("{"):
+                try:
+                    describe = bool(json.loads(text).get("describe"))
+                except json.JSONDecodeError:
+                    describe = False
+            reply = camera_client.snap_and_maybe_describe(describe)
+            _speak_direct(reply, t0=time.perf_counter())
+        except Exception as e:
+            ts(f"camera snap error: {e}")
+            try:
+                _speak_direct("I couldn't take a photo.", t0=time.perf_counter())
+            except Exception:
+                pass
         return
     source = "followup" if msg.topic == "jarvis/stt/followup" else "wake"
     ts(f"received STT text [{source}] ← {text!r}")
@@ -349,6 +430,7 @@ client.on_message = on_message
 client.subscribe("jarvis/stt/text")
 client.subscribe("jarvis/stt/followup")
 client.subscribe("jarvis/brain/reset")
+client.subscribe("jarvis/camera/snap")
 client.loop_start()
 
 ts(

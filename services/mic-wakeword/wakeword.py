@@ -44,6 +44,7 @@ def callback(indata, frames, time_info, status):
             ts(f"detected '{wakeword}' score={score:.2f} (infer {infer_ms:.1f}ms)")
             mqtt_client.publish("jarvis/wake/detected", "detected")
             mqtt_client.publish("jarvis/tts/interrupt", "stop")
+            mqtt_client.publish("jarvis/status/stt", "listening")
 
 with sd.InputStream(samplerate=16000, channels=1, dtype="float32", callback=callback, blocksize=1280):
     while True:

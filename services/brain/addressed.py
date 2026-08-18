@@ -82,7 +82,7 @@ _ADDRESSED = [
         r"^\s*(?:hey\s+)?(?:what|what's|whats|who|who's|whos|when|where|why|how|which|whose)\b",
         r"^\s*(?:is|are|was|were|do|does|did|can|could|would|will|should|am)\b",
         r"^\s*(?:tell|show|give|explain)\s+(?:me|us)\b",
-        r"^\s*(?:remind|set|turn|open|close|play|pause|stop|skip|resume|search|google|look\s+up|put\s+on)\b",
+        r"^\s*(?:remind|set|turn|open|close|play|pause|stop|skip|resume|search|google|look\s+up|put\s+on|take|snap|dim|brighten|mute|unmute)\b",
         # Continuations must look like a follow-up question, not a story ("And then…")
         r"^\s*(?:and|also)\s+(?:what|how's|hows|how|who|when|where|why|the|that|it|about)\b",
         r"^\s*(?:what about|how about|another|one more)\b",

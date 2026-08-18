@@ -102,8 +102,8 @@ jarvis/
 5. ✅ **openWakeWord**: hands-free "Hey Jarvis" (+ interrupt publish).
 6. ✅ **Streaming**: Ollama `stream=True` → sentence publish → TTS queue.
 7. ✅ **VAD (v1)**: energy/RMS end-of-speech (replace fixed `sleep(5)`). Library VAD optional later.
-8. **Home Assistant + web search/weather as tools.**
-9. **Avatar UI** — cosmetic, bolt on once the core loop is solid.
+8. ✅ **Home Assistant + web search/weather as tools.** (WLED/HA lights, Open-Meteo, Tavily)
+9. ✅ **Avatar UI** — control panel + visor; drop in PNGs or later Live2D.
 10. **Move services onto real hardware** — docker-compose reshuffle, not new architecture.
 
 ### Near-term enhancements (not numbered steps, but next UX wins)

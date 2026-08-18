@@ -7,6 +7,7 @@ import threading
 import paho.mqtt.client as mqtt
 import time
 import os
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -159,10 +160,15 @@ def whisper_transcribe_async(audio):
     publish_text(full_text, elapsed=elapsed)
 
 
+def publish_status(state: str):
+    mqtt_client.publish("jarvis/status/stt", state)
+
+
 def cartesia_listen_wake():
     global _wake_busy
     try:
         ts("wake received — Ink listening for your turn...")
+        publish_status("listening")
         t0 = time.perf_counter()
 
         def on_start():
@@ -181,6 +187,7 @@ def cartesia_listen_wake():
     except Exception as e:
         ts(f"error: {e}")
     finally:
+        publish_status("idle")
         _wake_busy = False
 
 
@@ -188,6 +195,7 @@ def cartesia_listen_followup():
     global _wake_busy
     try:
         ts(f"follow-up window open ({FOLLOWUP_WINDOW}s) via Ink...")
+        publish_status("listening")
         t0 = time.perf_counter()
         text = ink.listen_turn(
             idle_timeout=FOLLOWUP_WINDOW,
@@ -201,6 +209,7 @@ def cartesia_listen_followup():
     except Exception as e:
         ts(f"error: {e}")
     finally:
+        publish_status("idle")
         _wake_busy = False
 
 
@@ -208,6 +217,7 @@ def whisper_record_after_wake():
     global _wake_busy
     try:
         ts("wake received — listening until you finish speaking...")
+        publish_status("listening")
         recorder.start()
 
         heard_speech = False
@@ -243,6 +253,7 @@ def whisper_record_after_wake():
         audio = recorder.stop()
         whisper_transcribe_async(audio)
     finally:
+        publish_status("idle")
         _wake_busy = False
 
 
@@ -250,6 +261,7 @@ def whisper_record_followup():
     global _wake_busy
     try:
         ts(f"follow-up window open ({FOLLOWUP_WINDOW}s)...")
+        publish_status("listening")
         recorder.start()
 
         heard_speech = False
@@ -304,6 +316,7 @@ def whisper_record_followup():
         full_text = " ".join(seg.text.strip() for seg in segments).strip()
         publish_text(full_text, elapsed=elapsed, source="followup")
     finally:
+        publish_status("idle")
         _wake_busy = False
 
 
@@ -386,11 +399,32 @@ def on_mqtt_message(client, userdata, msg):
     threading.Thread(target=target, daemon=True).start()
 
 
+def _has_local_keyboard() -> bool:
+    forced = os.environ.get("JARVIS_PTT", "auto").strip().lower()
+    if forced in {"0", "off", "no"}:
+        return False
+    if forced in {"1", "on", "yes"}:
+        return True
+    if sys.platform == "darwin":
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
 mqtt_client.on_message = on_mqtt_message
 mqtt_client.subscribe("jarvis/wake/detected")
 mqtt_client.subscribe("jarvis/tts/response")
 
-ts("Ready. Hold SPACE to talk, release to stop. Esc to quit.")
-ts("Also listening for wake word on jarvis/wake/detected")
-with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
-    listener.join()
+ts("listening for wake word on jarvis/wake/detected")
+if _has_local_keyboard():
+    ts("Ready. Hold SPACE to talk, release to stop. Esc to quit.")
+    try:
+        with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
+            listener.join()
+    except Exception as e:
+        ts(f"PTT keyboard unavailable ({e}) — wake word only")
+        while True:
+            time.sleep(1)
+else:
+    ts("No display — PTT disabled, wake word only")
+    while True:
+        time.sleep(1)

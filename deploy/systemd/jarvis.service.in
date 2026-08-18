@@ -1,0 +1,16 @@
+[Unit]
+Description=Jarvis voice stack
+After=network-online.target docker.service jarvis-control.service
+Wants=jarvis-control.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=@JARVIS_ROOT@
+Environment=JARVIS_SKIP_CONTROL=1
+ExecStart=@JARVIS_ROOT@/start.sh --detach
+ExecStop=@JARVIS_ROOT@/stop.sh
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target

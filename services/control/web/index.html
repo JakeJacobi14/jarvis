@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#070b14">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/app.css">
+  <title>Jarvis</title>
+</head>
+<body class="dashboard">
+  <div class="wrap">
+    <div class="top">
+      <div>
+        <h1>Jarvis</h1>
+        <div class="sub" id="state">idle</div>
+      </div>
+      <a class="btn ghost" href="/avatar">Avatar</a>
+    </div>
+
+    <div class="card" id="pin-card" hidden>
+      <div class="pin-row">
+        <input id="pin" type="password" inputmode="numeric" placeholder="PIN">
+        <button id="unlock" type="button">Unlock</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="pills" id="pills"></div>
+    </div>
+
+    <div class="card">
+      <div class="actions">
+        <button id="start" type="button">Start</button>
+        <button id="stop" class="stop" type="button">Stop</button>
+        <button id="snap" class="ghost wide" type="button">Take photo</button>
+      </div>
+      <div class="msg" id="msg"></div>
+      <img class="preview" id="preview" alt="Latest snapshot">
+    </div>
+
+    <div class="card">
+      <div class="sub" style="margin-bottom:8px">Timing log</div>
+      <div class="log" id="log">Waiting…</div>
+    </div>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const pills = $("pills");
+    const msg = $("msg");
+    const preview = $("preview");
+    const pinCard = $("pin-card");
+
+    function setBusy(on) {
+      ["start", "stop", "snap"].forEach((id) => { $(id).disabled = on; });
+    }
+
+    function renderStatus(data) {
+      $("state").textContent = data.state || "idle";
+      const items = [
+        ["voice", data.voice],
+        ["broker", data.broker],
+        ["brain", data.services && data.services.brain],
+        ["tts", data.services && data.services.tts],
+        ["stt", data.services && data.services.stt],
+        ["wake", data.services && data.services["mic-wakeword"]],
+      ];
+      pills.innerHTML = items.map(([name, on]) =>
+        `<span class="pill ${on ? "on" : "off"}">${name}</span>`
+      ).join("");
+      if (data.latest_snap) {
+        preview.src = data.latest_snap + "?t=" + Date.now();
+        preview.classList.add("show");
+      }
+      pinCard.hidden = !data.pin_required;
+    }
+
+    async function api(path, opts) {
+      const res = await fetch(path, opts);
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        pinCard.hidden = false;
+        throw new Error("PIN required");
+      }
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.detail || data.message || data.error || "request failed");
+      }
+      return data;
+    }
+
+    async function refresh() {
+      const data = await fetch("/api/status").then((r) => r.json());
+      renderStatus(data);
+      try {
+        const logs = await api("/api/logs");
+        $("log").textContent = (logs.lines || []).join("\n") || "No log yet.";
+        $("log").scrollTop = $("log").scrollHeight;
+      } catch (_) {}
+    }
+
+    $("unlock").onclick = async () => {
+      try {
+        await api("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pin: $("pin").value }),
+        });
+        pinCard.hidden = true;
+        msg.textContent = "Unlocked.";
+        refresh();
+      } catch (e) {
+        msg.textContent = e.message;
+      }
+    };
+
+    async function act(path, label) {
+      setBusy(true);
+      msg.textContent = label + "…";
+      try {
+        const data = await api(path, { method: "POST" });
+        renderStatus(data);
+        msg.textContent = data.detail ? "Done." : (data.message || "Done.");
+        if (data.url) {
+          preview.src = data.url + "?t=" + Date.now();
+          preview.classList.add("show");
+        }
+      } catch (e) {
+        msg.textContent = e.message;
+      } finally {
+        setBusy(false);
+        refresh();
+      }
+    }
+
+    $("start").onclick = () => act("/api/start", "Starting");
+    $("stop").onclick = () => act("/api/stop", "Stopping");
+    $("snap").onclick = () => act("/api/snap", "Capturing");
+
+    const es = new EventSource("/api/events");
+    es.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.state) $("state").textContent = data.state;
+        if (data.status) renderStatus(data.status);
+      } catch (_) {}
+    };
+    refresh();
+    setInterval(refresh, 4000);
+  </script>
+</body>
+</html>

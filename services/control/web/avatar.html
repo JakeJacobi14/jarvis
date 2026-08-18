@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#070b14">
+  <link rel="stylesheet" href="/app.css">
+  <title>Jarvis · Avatar</title>
+</head>
+<body class="avatar-page is-idle">
+  <a class="btn ghost back" href="/">Control</a>
+  <div class="stage">
+    <div class="rings"></div>
+    <div class="core"></div>
+    <div class="eyes"><div class="eye"></div><div class="eye"></div></div>
+    <div class="mouth"></div>
+    <img class="character" id="face" alt="Jarvis">
+    <div class="label" id="label">idle</div>
+  </div>
+  <script>
+    const face = document.getElementById("face");
+    const label = document.getElementById("label");
+    const body = document.body;
+    let idleSrc = "";
+    let talkSrc = "";
+    let hasCharacter = false;
+
+    function setState(state) {
+      const next = state || "idle";
+      body.classList.remove("is-idle", "is-listening", "is-thinking", "is-speaking");
+      body.classList.add("is-" + next);
+      label.textContent = next;
+      if (hasCharacter) {
+        face.src = next === "speaking" && talkSrc ? talkSrc : idleSrc;
+      }
+    }
+
+    function tryCharacter() {
+      const idle = new Image();
+      idle.onload = () => {
+        idleSrc = "/character/idle.png";
+        hasCharacter = true;
+        face.src = idleSrc;
+        face.classList.add("show");
+        document.querySelector(".core").style.opacity = "0.15";
+        document.querySelector(".eyes").style.display = "none";
+        document.querySelector(".mouth").style.display = "none";
+      };
+      idle.src = "/character/idle.png";
+      const talk = new Image();
+      talk.onload = () => { talkSrc = "/character/talk.png"; };
+      talk.src = "/character/talk.png";
+    }
+
+    const es = new EventSource("/api/events");
+    es.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data);
+        if (data.state) setState(data.state);
+      } catch (_) {}
+    };
+    tryCharacter();
+  </script>
+</body>
+</html>

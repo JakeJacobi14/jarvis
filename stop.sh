@@ -84,7 +84,11 @@ fi
 
 rm -f "$PID_DIR/services.pid"
 
-if [[ "${1:-}" == "--broker" ]] || [[ "${1:-}" == "-b" ]]; then
+if [[ "${1:-}" == "--all" ]] || [[ "${1:-}" == "-a" ]]; then
+  stop_one "control" "server.py"
+fi
+
+if [[ "${1:-}" == "--broker" ]] || [[ "${1:-}" == "-b" ]] || [[ "${1:-}" == "--all" ]] || [[ "${1:-}" == "-a" ]]; then
   echo "==> Stopping MQTT broker..."
   if command -v docker >/dev/null 2>&1; then
     if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx 'jarvis-broker'; then
@@ -95,6 +99,7 @@ if [[ "${1:-}" == "--broker" ]] || [[ "${1:-}" == "-b" ]]; then
   fi
 else
   echo "Broker left running. Pass --broker to stop it too."
+  echo "Phone panel left running. Pass --all to stop it too."
 fi
 
 echo "Done."

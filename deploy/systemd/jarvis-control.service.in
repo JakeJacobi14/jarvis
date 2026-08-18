@@ -1,0 +1,14 @@
+[Unit]
+Description=Jarvis phone control panel
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@JARVIS_ROOT@
+ExecStart=@JARVIS_ROOT@/services/control/.venv/bin/python -u server.py
+Restart=always
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

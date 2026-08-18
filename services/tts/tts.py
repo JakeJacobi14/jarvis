@@ -55,6 +55,7 @@ def speaker_loop():
                 continue
             t0 = time.perf_counter()
             ts(f"speaking ← {text!r}")
+            client.publish("jarvis/status/tts", "speaking")
             synth_s, play_s = tts.say(text)
             ts(
                 f"spoke in {time.perf_counter() - t0:.2f}s "
@@ -66,6 +67,7 @@ def speaker_loop():
             speak_queue.task_done()
             if speak_queue.empty() and not _interrupt.is_set():
                 ts("queue empty → done")
+                client.publish("jarvis/status/tts", "idle")
                 client.publish("jarvis/tts/response", "done")
 
 
@@ -78,6 +80,7 @@ def on_interrupt(client, userdata, msg):
         sd.stop()
     except Exception:
         pass
+    client.publish("jarvis/status/tts", "idle")
     _interrupt.clear()
 
 
