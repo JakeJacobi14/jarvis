@@ -8,7 +8,6 @@ from pathlib import Path
 
 from commands import match_command
 from commands.search import looks_like_fact_question
-from addressed import is_addressed_to_jarvis
 from llm import model_name, provider_name, stream_chat
 import camera_client
 import spotify_client
@@ -322,16 +321,6 @@ def query_brain(user_text: str, *, source: str = "wake"):
         client.publish("jarvis/tts/interrupt", "stop")
         ts(f"command={cmd.label} silent cancel ← {user_text!r} [{source}]")
         return
-
-    # Follow-up window: ignore side chatter not directed at Jarvis
-    if source == "followup":
-        if cmd is not None:
-            pass  # play / search / time / etc. — clearly for Jarvis
-        elif not is_addressed_to_jarvis(user_text):
-            ts(f"ignored follow-up (not addressed) ← {user_text!r}")
-            return
-        else:
-            ts(f"follow-up addressed ← {user_text!r}")
 
     publish_status("thinking")
     try:
