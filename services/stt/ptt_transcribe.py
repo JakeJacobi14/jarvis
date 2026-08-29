@@ -29,6 +29,38 @@ def _load_dotenv():
 
 _load_dotenv()
 
+
+def resolve_mic_device():
+    """Index or name substring from JARVIS_MIC_DEVICE; else OS default input."""
+    raw = os.environ.get("JARVIS_MIC_DEVICE", "").strip()
+    devices = sd.query_devices()
+    if not raw:
+        idx = sd.default.device[0]
+        return None if idx is None or int(idx) < 0 else int(idx)
+    try:
+        idx = int(raw)
+        info = devices[idx]
+        if info["max_input_channels"] < 1:
+            raise SystemExit(f"JARVIS_MIC_DEVICE={idx} has no inputs: {info['name']}")
+        return idx
+    except ValueError:
+        needle = raw.lower()
+        hits = [
+            i
+            for i, d in enumerate(devices)
+            if d["max_input_channels"] > 0 and needle in d["name"].lower()
+        ]
+        if not hits:
+            raise SystemExit(
+                f"JARVIS_MIC_DEVICE={raw!r} not found. "
+                "Run: services/stt/.venv/bin/python -m sounddevice"
+            )
+        if len(hits) > 1:
+            names = ", ".join(f"{i}:{devices[i]['name']}" for i in hits)
+            raise SystemExit(f"JARVIS_MIC_DEVICE={raw!r} matches more than one device ({names})")
+        return hits[0]
+
+
 # VAD (whisper / local path only)
 SILENCE_THRESHOLD = 0.01
 SILENCE_DURATION = 0.7
@@ -80,6 +112,12 @@ mqtt_client.loop_start()
 
 PROVIDER = provider_name()
 ts(f"provider={PROVIDER}")
+_mic = resolve_mic_device()
+if _mic is not None:
+    sd.default.device = (_mic, sd.default.device[1])
+    ts(f"mic {_mic}: {sd.query_devices(_mic)['name']}")
+else:
+    ts("mic: OS default input")
 
 # ── backends ─────────────────────────────────────────────────────────
 whisper_model = None

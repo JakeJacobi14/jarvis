@@ -176,6 +176,8 @@ sudo dnf install portaudio-devel ffmpeg
 
 `Jarvis.command` and Terminal auto-open are macOS-only; on Linux use `./start.sh --detach` (or `./start.sh` for a live timing feed).
 
+The web page does not capture audio. Wake word and STT use the machine’s default input (or `JARVIS_MIC_DEVICE` in `.env`). List devices with `services/mic-wakeword/.venv/bin/python -m sounddevice`, then either `wpctl set-default <id>` / `pactl set-default-source <name>` and restart, or set `JARVIS_MIC_DEVICE` to that index.
+
 ## Benchmark (LLM + TTS)
 
 With the stack running, inject 5 fixed prompts (skips mic/STT) and print splits:
