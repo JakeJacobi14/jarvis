@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Take one still from the default camera. No third-party imports required.
 
-Tries, in order: imagesnap (macOS), fswebcam (Linux), ffmpeg, then OpenCV
-if it happens to be installed.
+Tries, in order: imagesnap (macOS), fswebcam (Linux), ffmpeg, the clipper's
+rolling buffer (when it already holds the camera), then OpenCV if it happens
+to be installed.
 """
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -36,11 +38,52 @@ def _run(argv: list[str]) -> bool:
     return proc.returncode == 0
 
 
+CLIP_BUFFER = Path(__file__).resolve().parents[1] / "clipper" / ".clipbuf"
+
+
+def _live_buffer_segment() -> Path | None:
+    """Newest finished segment, only while the clipper is actively recording."""
+    if not CLIP_BUFFER.is_dir():
+        return None
+    segments = sorted(CLIP_BUFFER.glob("seg-*.mp4"))
+    if len(segments) < 2:
+        return None
+    try:
+        # The in-progress segment proves the recorder is alive right now.
+        if time.time() - segments[-1].stat().st_mtime > 15:
+            return None
+    except OSError:
+        return None
+    return segments[-2]
+
+
+def _from_buffer(dest: Path) -> bool:
+    """Pull a frame out of the rolling clip buffer instead of the device.
+
+    The clipper holds the camera continuously, so opening it a second time
+    would either fail or fight for the device.
+    """
+    segment = _live_buffer_segment()
+    ffmpeg = shutil.which("ffmpeg")
+    if segment is None or not ffmpeg:
+        return False
+    base = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
+    tail = ["-frames:v", "1", "-q:v", "2", str(dest)]
+    # Prefer the freshest frame in the segment, else settle for the first.
+    for seek in (["-sseof", "-0.4"], []):
+        if _run([*base, *seek, "-i", str(segment), *tail]) and dest.is_file():
+            return True
+    return False
+
+
 def capture(dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         dest.unlink()
     device = _device()
+
+    if _from_buffer(dest):
+        return
 
     if sys.platform == "darwin" and shutil.which("imagesnap"):
         if _run(["imagesnap", "-w", "0.8", str(dest)]) and dest.is_file():

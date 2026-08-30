@@ -15,6 +15,9 @@ Local voice assistant pipeline over MQTT: wake word → STT → LLM brain → TT
 - ✅ Brain command system + Tavily web search (`google …` / `search …` / live-fact detect)
 - ✅ Weather (Open-Meteo), lights (WLED / Home Assistant), camera snap, timers, volume
 - ✅ Phone control panel + talking avatar (PWA on the LAN)
+- ✅ Dashcam clips — *"Jarvis, clip that"* saves the last 30s of camera + mic
+- ✅ Live transcript on the phone panel + hold-to-speak from another room
+- ✅ Built-in Spotify Connect speaker (librespot), so no Spotify app has to be open
 
 ## Requirements
 
@@ -25,7 +28,9 @@ Local voice assistant pipeline over MQTT: wake word → STT → LLM brain → TT
   - Or local Kokoro if `JARVIS_TTS_PROVIDER=kokoro` / Whisper if `JARVIS_STT_PROVIDER=whisper`
 - **Tavily API key** (web search commands) — [app.tavily.com](https://app.tavily.com/home)
 - **Python 3.10+**, mic + speakers
-- Optional: **ffmpeg** (camera stills), a **WLED** strip or Home Assistant for lights
+- **ffmpeg** — required for `clip that`, also used for camera stills
+- Optional: **librespot** (`brew install librespot`) so Spotify plays with no app open
+- Optional: a **WLED** strip or Home Assistant for lights
 ## Config
 
 ```bash
@@ -45,6 +50,8 @@ cp .env.example .env
 | `SPOTIFY_CLIENT_ID` | — | Spotify developer app |
 | `SPOTIFY_CLIENT_SECRET` | — | Spotify developer app |
 | `SPOTIFY_REFRESH_TOKEN` | — | from `spotify_auth.py` |
+| `JARVIS_SPOTIFY_LOCAL_DEVICE` | `auto` | run librespot as a local Connect speaker |
+| `JARVIS_SPOTIFY_DEVICE` | `Jarvis` | Connect device name to prefer |
 | `JARVIS_TTS_PROVIDER` | `cartesia` | `cartesia` or `kokoro` |
 | `CARTESIA_API_KEY` | — | required for Cartesia TTS |
 | `CARTESIA_TTS_MODEL` | `sonic-3.5` | |
@@ -56,6 +63,11 @@ cp .env.example .env
 | `HA_URL` / `HA_TOKEN` / `HA_LIGHT_ENTITY` | — | Home Assistant lights if not using WLED |
 | `JARVIS_CONTROL_PORT` | `8740` | phone panel + avatar |
 | `JARVIS_CONTROL_PIN` | — | optional PIN for the panel |
+| `JARVIS_CONTROL_TLS` | `0` | serve https — required for the phone mic |
+| `JARVIS_CLIP_ENABLED` | `1` | rolling dashcam buffer for `clip that` |
+| `JARVIS_CLIP_SECONDS` | `30` | default clip length |
+| `JARVIS_CLIP_MAX_SECONDS` | `90` | buffer depth / longest clip you can ask for |
+| `JARVIS_CLIP_AUDIO` | `1` | record the mic alongside video |
 
 ### Voice commands (brain)
 
@@ -71,6 +83,7 @@ Extensible registry in `services/brain/commands/`. First match wins.
 | `pause` / `resume` / `skip` / `next` / `previous` | Spotify playback control |
 | `turn on/off the lights` / `lights red` / `rainbow` | WLED strip or Home Assistant light |
 | `take a picture` / `what do you see` | one still from the camera; Groq vision describes it when asked |
+| `clip that` / `clip the last 45 seconds` | saves the last stretch of camera + mic to `clips/` |
 | `set a timer for 5 minutes` / `remind me in 30 seconds` | speaks when it fires (brain must stay running) |
 | `volume up/down` / `set volume to 40` / `mute` | macOS or Linux (pactl/wpctl) speaker volume |
 | `what can you do` / `help` | short capability list |
@@ -79,13 +92,50 @@ Extensible registry in `services/brain/commands/`. First match wins.
 
 After Jarvis answers, follow-up speech is answered without requiring the wake word again.
 
-**Spotify setup:** create a [Spotify developer app](https://developer.spotify.com/dashboard), add redirect URI `http://127.0.0.1:8732/callback`, put `SPOTIFY_CLIENT_ID` + `SPOTIFY_CLIENT_SECRET` in `.env`, then:
+### Spotify (no app needed)
+
+Playback goes through the **Spotify Web API**, which can only steer an existing
+Spotify Connect device. So Jarvis runs his own headless one
+([librespot](https://github.com/librespot-org/librespot)) and prefers it — that
+is what lets music start with no Spotify app open anywhere.
+
+Two one-time steps, both requiring Premium:
 
 ```bash
+# 1. Web API access (search, play, pause, skip)
+#    Create an app at https://developer.spotify.com/dashboard
+#    Add redirect URI http://127.0.0.1:8732/callback
+#    Put SPOTIFY_CLIENT_ID + SPOTIFY_CLIENT_SECRET in .env, then:
 cd services/brain && .venv/bin/python spotify_auth.py
+
+# 2. The local speaker itself
+brew install librespot          # or: cargo install librespot
+./start.sh --spotify-login      # opens a URL; approve once, credentials cache
 ```
 
-Open the Spotify app on a phone/computer (Premium), restart brain, then say e.g. *play Bohemian Rhapsody*.
+After that `./start.sh` brings the device up automatically and *play Bohemian
+Rhapsody* plays through this machine's speakers. Credentials cache in
+`services/spotify/cache/`, so the login is genuinely once.
+
+Skip step 2 and everything still works the old way — you just have to leave
+Spotify open on some device. Set `JARVIS_SPOTIFY_LOCAL_DEVICE=off` to never
+start it.
+
+### Dashcam clips
+
+Say *clip that* and the last 30 seconds of camera + microphone are written to
+`clips/`. Also *clip the last 10 seconds*, *clip the last minute*, or the
+**Clip 30s** button on the phone panel.
+
+To make that possible a `clipper` service records continuously into a rolling
+buffer (`services/clipper/.clipbuf/`, ~90s deep, oldest segments deleted). Only
+the requested tail is ever copied out, so saving takes well under a second and
+nothing else is kept. Roughly 25–40 MB of disk is in use at any moment.
+
+The camera light stays on while Jarvis runs. Turn the whole thing off with
+`JARVIS_CLIP_ENABLED=0`, or record silent video with `JARVIS_CLIP_AUDIO=0`.
+Because the recorder holds the camera, *take a picture* pulls its frame from the
+buffer instead of fighting for the device.
 
 ### Lights / RGB strips
 
@@ -106,9 +156,28 @@ The box does not need a monitor. The control panel binds to the LAN:
 ./start.sh --detach      # voice + panel, then exit (systemd / SSH)
 ```
 
-On your phone, open `http://<pc-ip>:8740`. Start / Stop the voice stack, take a photo, watch the timing log. `/avatar` is a full-screen talking visor — drop `idle.png` + `talk.png` into `services/control/web/character/` to use your own 2D model (mouth-open vs idle). Add the URL to the home screen for a standalone “app”.
+On your phone, open `http://<pc-ip>:8740`. Start / Stop the voice stack, take a photo, save a clip, read the live transcript, watch the timing log. `/avatar` is a full-screen talking visor — drop `idle.png` + `talk.png` into `services/control/web/character/` to use your own 2D model (mouth-open vs idle). Add the URL to the home screen for a standalone “app”.
 
 Optional PIN: `JARVIS_CONTROL_PIN` in `.env`. Keep it on the apartment LAN; do not port-forward it.
+
+#### Live transcript
+
+Everything Jarvis hears and says streams to the panel over SSE, so you can read the conversation from another room. Sentences from one answer are folded into a single line, and phone/typed commands are tagged with where they came from.
+
+#### Talking to him from your phone
+
+Hold **Hold to speak**, talk, release. The recording is transcribed on the Jarvis box (Groq Whisper, falling back to Cartesia) and injected as if it had been spoken into the room — so he answers out loud on the computer's speakers while you are somewhere else.
+
+Browsers only grant microphone access on a secure origin, so this needs https:
+
+```bash
+# .env
+JARVIS_CONTROL_TLS=1
+```
+
+`start.sh` generates a self-signed certificate on first boot. Your phone will warn about the unknown issuer once per device; accept it and the mic works. If you would rather not click through a warning, put the panel behind a real certificate (Tailscale Serve or Cloudflare Tunnel both do this for free).
+
+Without https the mic button is disabled and explains why. The **type a command** box next to it always works, over plain http, with no transcription key needed.
 
 Linux box at boot:
 
@@ -144,6 +213,7 @@ Import it and append `PingCommand()` to `REGISTERED` in `commands/__init__.py` (
 ./start.sh --detach     # background + phone panel, then exit
 ./start.sh --control    # phone panel only
 ./start.sh --setup      # venvs + TTS models only
+./start.sh --spotify-login   # one-time Spotify device sign-in
 ./stop.sh               # stop Python voice services (panel stays up)
 ./stop.sh --broker      # also stop Mosquitto
 ./stop.sh --all         # voice + panel + broker
@@ -176,7 +246,7 @@ sudo dnf install portaudio-devel ffmpeg
 
 `Jarvis.command` and Terminal auto-open are macOS-only; on Linux use `./start.sh --detach` (or `./start.sh` for a live timing feed).
 
-The web page does not capture audio. Wake word and STT use the machine’s default input (or `JARVIS_MIC_DEVICE` in `.env`). List devices with `services/mic-wakeword/.venv/bin/python -m sounddevice`, then either `wpctl set-default <id>` / `pactl set-default-source <name>` and restart, or set `JARVIS_MIC_DEVICE` to that index.
+Wake word and always-on STT use the machine’s default input (or `JARVIS_MIC_DEVICE` in `.env`) — the phone’s hold-to-speak button is a separate path that uploads a recording instead. List devices with `services/mic-wakeword/.venv/bin/python -m sounddevice`, then either `wpctl set-default <id>` / `pactl set-default-source <name>` and restart, or set `JARVIS_MIC_DEVICE` to that index.
 
 ## Benchmark (LLM + TTS)
 
@@ -222,10 +292,19 @@ Ctrl-C in the main window only stops the timing view — services keep running (
 | `jarvis/status/tts` | TTS → `speaking` / `idle` (avatar) |
 | `jarvis/status/stt` | STT/wake → `listening` / `idle` (avatar) |
 | `jarvis/status/brain` | brain → `thinking` / `idle` (avatar) |
+| `jarvis/status/clipper` | clipper → `recording` / `saving` / `idle` |
 | `jarvis/camera/snap` | phone/other → brain (take a still; optional JSON `{"describe":true}`) |
+| `jarvis/clip/save` | brain/panel → clipper (JSON `{"id":…,"seconds":30}`) |
+| `jarvis/clip/saved` | clipper → requester (JSON with `name` + real `seconds`) |
+| `jarvis/clip/error` | clipper → requester (JSON `{"id":…,"error":…}`) |
+
+The panel also subscribes to `jarvis/stt/text`, `jarvis/stt/followup`, and
+`jarvis/brain/response` to build the live transcript, and publishes to
+`jarvis/stt/text` when you speak or type from a phone.
 
 ## Not done yet
 
 - Robust barge-in while speakers are loud (echo)
 - Live2D / Rive lip-sync (PNG pair on `/avatar` is the current 2D path)
 - Per-room devices, Hue-direct (use HA or WLED for now)
+- Clips are camera-only; no screen recording, and no ring buffer on disk reboot-safe

@@ -2,6 +2,10 @@
 
 Requires Spotify Premium and a one-time OAuth (see spotify_auth.py):
   SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN
+
+The Web API only steers existing Spotify Connect devices, so start.sh runs a
+headless one (librespot) named after JARVIS_SPOTIFY_DEVICE. That device is
+preferred here, which is what lets playback work with no Spotify app open.
 """
 from __future__ import annotations
 
@@ -91,30 +95,58 @@ def list_devices() -> list[dict[str, Any]]:
     return list((resp.json() or {}).get("devices") or [])
 
 
+NO_DEVICE_MSG = (
+    "No Spotify devices found. Start the built-in one with "
+    "./start.sh --spotify-login (once), or open Spotify on a device."
+)
+
+
+def _preferred_name() -> str:
+    return os.environ.get("JARVIS_SPOTIFY_DEVICE", "Jarvis").strip() or "Jarvis"
+
+
+def _transfer(device_id: str) -> None:
+    resp = _request("PUT", "/me/player", json={"device_ids": [device_id], "play": False})
+    if resp.status_code not in (204, 200, 202):
+        # Playback calls take a device_id anyway, so a failed transfer is survivable.
+        pass
+
+
 def _ensure_device() -> str | None:
-    """Return an active device id, transferring to one if needed."""
+    """Return a device id to target, waking the local Jarvis speaker first.
+
+    librespot (started by start.sh) registers a Connect device named after
+    JARVIS_SPOTIFY_DEVICE. Preferring it means music plays on this machine
+    without the Spotify app running anywhere.
+    """
     devices = list_devices()
     if not devices:
-        raise SpotifyError(
-            "No Spotify devices found. Open Spotify on your phone or computer first."
-        )
+        # A just-started librespot can take a moment to register.
+        for _ in range(2):
+            time.sleep(1.0)
+            devices = list_devices()
+            if devices:
+                break
+    if not devices:
+        raise SpotifyError(NO_DEVICE_MSG)
+
+    wanted = _preferred_name().lower()
+    local = next(
+        (d for d in devices if (d.get("name") or "").strip().lower() == wanted), None
+    )
+    if local and local.get("id"):
+        if not local.get("is_active"):
+            _transfer(local["id"])
+        return local["id"]
+
     active = next((d for d in devices if d.get("is_active")), None)
     if active:
         return active.get("id")
-    # Wake the first available device
-    target = devices[0]
-    did = target.get("id")
+
+    did = devices[0].get("id")
     if not did:
         raise SpotifyError("No usable Spotify device")
-    resp = _request(
-        "PUT",
-        "/me/player",
-        json={"device_ids": [did], "play": False},
-    )
-    # 204 success; 404 no device — already handled
-    if resp.status_code not in (204, 200, 202):
-        # still try playing without transfer
-        pass
+    _transfer(did)
     return did
 
 
@@ -332,7 +364,7 @@ def play_query(query: str) -> str:
         json={"uris": [uri]},
     )
     if resp.status_code == 404:
-        return "Open Spotify on a device first, then ask me again."
+        return "I don't have a Spotify device to play on right now."
     if resp.status_code == 403:
         return "Spotify Premium is required to play music."
     if resp.status_code not in (204, 200, 202):
@@ -375,7 +407,7 @@ def control(action: str) -> str:
         if resp.status_code in (204, 200, 202):
             return "Resuming."
         if resp.status_code == 404:
-            return "Open Spotify on a device first."
+            return "I don't have a Spotify device to play on right now."
         raise SpotifyError(f"Resume failed ({resp.status_code})")
 
     if action == "next":

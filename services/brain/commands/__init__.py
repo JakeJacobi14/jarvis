@@ -4,6 +4,7 @@ from __future__ import annotations
 from commands.base import Command, CommandResult
 from commands.camera import CameraCommand
 from commands.cancel import CancelCommand
+from commands.clip import ClipCommand
 from commands.datetime_cmd import DateTimeCommand
 from commands.help_cmd import HelpCommand
 from commands.lights import LightsCommand
@@ -25,6 +26,7 @@ REGISTERED: list[Command] = [
     TimerCommand(),
     VolumeCommand(),
     LightsCommand(),
+    ClipCommand(),
     CameraCommand(),
     WeatherCommand(),
     SpotifyCommand(),

@@ -5,8 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 PID_DIR="$ROOT/.pids"
 
-SERVICES=(brain tts stt mic-wakeword)
-SCRIPTS=(brain.py tts.py ptt_transcribe.py wakeword.py)
+SERVICES=(brain tts stt mic-wakeword clipper)
+SCRIPTS=(brain.py tts.py ptt_transcribe.py wakeword.py clipper.py)
 
 kill_pid() {
   local pid="$1"
@@ -72,15 +72,15 @@ for name in "${SERVICES[@]}"; do
   i=$((i + 1))
 done
 
-if [[ -f "$PID_DIR/ollama.pid" ]]; then
-  pid="$(cat "$PID_DIR/ollama.pid")"
-  if kill_pid "$pid" "ollama"; then
-    :
-  else
-    echo "==> ollama already stopped (stale pid $pid)"
+for extra in ollama librespot; do
+  if [[ -f "$PID_DIR/$extra.pid" ]]; then
+    pid="$(cat "$PID_DIR/$extra.pid")"
+    if ! kill_pid "$pid" "$extra"; then
+      echo "==> $extra already stopped (stale pid $pid)"
+    fi
+    rm -f "$PID_DIR/$extra.pid"
   fi
-  rm -f "$PID_DIR/ollama.pid"
-fi
+done
 
 rm -f "$PID_DIR/services.pid"
 

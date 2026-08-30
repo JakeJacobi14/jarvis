@@ -11,6 +11,16 @@
 # Camera snapshots
 captures/
 
+# Dashcam clips + rolling buffer
+clips/
+services/clipper/.clipbuf/
+
+# Self-signed cert for the phone panel
+services/control/certs/
+
+# Spotify Connect device credentials
+services/spotify/cache/
+
 # macOS
 .DS_Store
 

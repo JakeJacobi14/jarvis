@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#070b14">
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/app.css?v=2">
+  <link rel="stylesheet" href="/app.css?v=3">
   <title>Jarvis</title>
 </head>
 <body class="dashboard is-idle">
@@ -45,13 +45,33 @@
     </div>
 
     <div class="card">
+      <div class="sub" style="margin-bottom:10px">Talk to him</div>
+      <button id="talk" class="talk" type="button">Hold to speak</button>
+      <div class="msg" id="talk-msg"></div>
+      <div class="pin-row" style="margin-top:10px">
+        <input id="say" type="text" placeholder="Or type a command" autocomplete="off"
+               autocapitalize="sentences" enterkeyhint="send">
+        <button id="send" type="button">Send</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="sub" style="margin-bottom:8px">Transcript</div>
+      <div class="transcript" id="transcript">
+        <div class="line muted">Nothing yet.</div>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="actions">
         <button id="start" type="button">Start</button>
         <button id="stop" class="stop" type="button">Stop</button>
-        <button id="snap" class="ghost wide" type="button">Take photo</button>
+        <button id="clip" class="ghost" type="button">Clip 30s</button>
+        <button id="snap" class="ghost" type="button">Take photo</button>
       </div>
       <div class="msg" id="msg"></div>
       <img class="preview" id="preview" alt="Latest snapshot">
+      <div class="clips" id="clips"></div>
     </div>
 
     <div class="card">
@@ -63,8 +83,12 @@
     const $ = (id) => document.getElementById(id);
     const pills = $("pills");
     const msg = $("msg");
+    const talkMsg = $("talk-msg");
     const preview = $("preview");
     const pinCard = $("pin-card");
+    const transcriptEl = $("transcript");
+
+    const entries = new Map();
 
     function setState(state) {
       const next = state || "idle";
@@ -74,7 +98,7 @@
     }
 
     function setBusy(on) {
-      ["start", "stop", "snap"].forEach((id) => { $(id).disabled = on; });
+      ["start", "stop", "snap", "clip"].forEach((id) => { $(id).disabled = on; });
     }
 
     function renderStatus(data) {
@@ -86,6 +110,7 @@
         ["tts", data.services && data.services.tts],
         ["stt", data.services && data.services.stt],
         ["wake", data.services && data.services["mic-wakeword"]],
+        ["clipper", data.services && data.services.clipper],
       ];
       pills.innerHTML = items.map(([name, on]) =>
         `<span class="pill ${on ? "on" : "off"}">${name}</span>`
@@ -95,8 +120,55 @@
         preview.classList.add("show");
       }
       pinCard.hidden = !data.pin_required;
+      if (typeof data.mic_relay === "boolean") micRelay = data.mic_relay;
     }
 
+    // ── transcript ────────────────────────────────────────────────
+    const LABELS = { user: "You", jarvis: "Jarvis", system: "—" };
+
+    function renderTranscript() {
+      if (!entries.size) {
+        transcriptEl.innerHTML = '<div class="line muted">Nothing yet.</div>';
+        return;
+      }
+      const sorted = [...entries.values()].sort((a, b) => a.id - b.id);
+      const nearBottom = transcriptEl.scrollHeight - transcriptEl.scrollTop
+        - transcriptEl.clientHeight < 60;
+      transcriptEl.innerHTML = sorted.map((e) => {
+        const tag = e.role === "user" && e.source && e.source !== "voice"
+          ? `${LABELS[e.role]} (${e.source})` : LABELS[e.role] || e.role;
+        return `<div class="line ${e.role}"><span class="who">${tag}</span>${escapeHtml(e.text)}</div>`;
+      }).join("");
+      if (nearBottom) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    function upsert(entry) {
+      entries.set(entry.id, entry);
+      while (entries.size > 120) entries.delete(entries.keys().next().value);
+      renderTranscript();
+    }
+
+    function replaceTranscript(list) {
+      entries.clear();
+      (list || []).forEach((e) => entries.set(e.id, e));
+      renderTranscript();
+    }
+
+    function renderClips(list) {
+      if (!list || !list.length) { $("clips").innerHTML = ""; return; }
+      $("clips").innerHTML = list.map((c) =>
+        `<a class="clip-row" href="${c.url}" target="_blank" rel="noopener">
+           <span>${escapeHtml(c.name.replace(/^clip-/, ""))}</span>
+           <span class="muted">${c.when} · ${c.size_mb} MB</span>
+         </a>`).join("");
+    }
+
+    // ── api ───────────────────────────────────────────────────────
     async function api(path, opts) {
       const res = await fetch(path, opts);
       const data = await res.json().catch(() => ({}));
@@ -118,6 +190,7 @@
         $("log").textContent = (logs.lines || []).join("\n") || "No log yet.";
         $("log").scrollTop = $("log").scrollHeight;
       } catch (_) {}
+      try { renderClips((await api("/api/clips")).clips); } catch (_) {}
     }
 
     $("unlock").onclick = async () => {
@@ -135,17 +208,23 @@
       }
     };
 
-    async function act(path, label) {
+    async function act(path, label, body) {
       setBusy(true);
       msg.textContent = label + "…";
       try {
-        const data = await api(path, { method: "POST" });
+        const opts = { method: "POST" };
+        if (body) {
+          opts.headers = { "Content-Type": "application/json" };
+          opts.body = JSON.stringify(body);
+        }
+        const data = await api(path, opts);
         renderStatus(data);
-        msg.textContent = data.detail ? "Done." : (data.message || "Done.");
+        msg.textContent = data.message || (data.detail ? "Done." : "Done.");
         if (data.url) {
           preview.src = data.url + "?t=" + Date.now();
           preview.classList.add("show");
         }
+        if (data.clips) renderClips(data.clips);
       } catch (e) {
         msg.textContent = e.message;
       } finally {
@@ -157,17 +236,142 @@
     $("start").onclick = () => act("/api/start", "Starting");
     $("stop").onclick = () => act("/api/stop", "Stopping");
     $("snap").onclick = () => act("/api/snap", "Capturing");
+    $("clip").onclick = () => act("/api/clip", "Clipping", { seconds: 30 });
 
+    // ── typed commands ────────────────────────────────────────────
+    async function sendTyped() {
+      const text = $("say").value.trim();
+      if (!text) return;
+      $("send").disabled = true;
+      try {
+        await api("/api/say", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        $("say").value = "";
+        talkMsg.textContent = "Sent.";
+      } catch (e) {
+        talkMsg.textContent = e.message;
+      } finally {
+        $("send").disabled = false;
+      }
+    }
+    $("send").onclick = sendTyped;
+    $("say").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); sendTyped(); }
+    });
+
+    // ── hold to speak ─────────────────────────────────────────────
+    const talkBtn = $("talk");
+    const canRecord = window.isSecureContext
+      && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
+      && typeof MediaRecorder !== "undefined";
+    let micRelay = true;
+    let recorder = null;
+    let micStream = null;
+    let chunks = [];
+    let holding = false;
+    let autoStop = null;
+
+    if (!canRecord) {
+      talkBtn.disabled = true;
+      talkBtn.textContent = "Mic needs https";
+      talkMsg.innerHTML = location.protocol === "https:"
+        ? "This browser won't share the microphone."
+        : "Type commands below, or serve the panel over https "
+          + "(<code>JARVIS_CONTROL_TLS=1</code>) to unlock the mic.";
+    }
+
+    function pickMime() {
+      const options = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"];
+      for (const t of options) {
+        if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) return t;
+      }
+      return "";
+    }
+
+    async function startRecording() {
+      if (recorder || !canRecord) return;
+      if (!micRelay) {
+        talkMsg.textContent = "No transcription key set on the Jarvis box.";
+        return;
+      }
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true },
+        });
+      } catch (e) {
+        talkMsg.textContent = "Microphone blocked. Allow access and try again.";
+        return;
+      }
+      const mimeType = pickMime();
+      recorder = new MediaRecorder(micStream, mimeType ? { mimeType } : undefined);
+      chunks = [];
+      recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      recorder.onstop = upload;
+      recorder.start();
+      talkBtn.classList.add("recording");
+      talkBtn.textContent = "Listening… release to send";
+      talkMsg.textContent = "";
+      autoStop = setTimeout(stopRecording, 20000);
+    }
+
+    function stopRecording() {
+      clearTimeout(autoStop);
+      talkBtn.classList.remove("recording");
+      talkBtn.textContent = "Hold to speak";
+      if (recorder && recorder.state !== "inactive") recorder.stop();
+    }
+
+    async function upload() {
+      const type = (recorder && recorder.mimeType) || "audio/webm";
+      const blob = new Blob(chunks, { type });
+      recorder = null;
+      if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
+      if (blob.size < 1500) { talkMsg.textContent = "Too short — hold it a bit longer."; return; }
+      talkMsg.textContent = "Sending…";
+      try {
+        const data = await api("/api/voice", {
+          method: "POST",
+          headers: { "Content-Type": type },
+          body: blob,
+        });
+        talkMsg.textContent = data.text ? `Heard: "${data.text}"` : (data.message || "Nothing heard.");
+      } catch (e) {
+        talkMsg.textContent = e.message;
+      }
+    }
+
+    // Pointer events cover mouse and touch; the pointer may leave the button.
+    talkBtn.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      holding = true;
+      if (talkBtn.setPointerCapture && e.pointerId !== undefined) {
+        try { talkBtn.setPointerCapture(e.pointerId); } catch (_) {}
+      }
+      startRecording();
+    });
+    const release = () => { if (holding) { holding = false; stopRecording(); } };
+    talkBtn.addEventListener("pointerup", release);
+    talkBtn.addEventListener("pointercancel", release);
+    window.addEventListener("blur", release);
+    talkBtn.addEventListener("contextmenu", (e) => e.preventDefault());
+
+    // ── live feed ─────────────────────────────────────────────────
     const es = new EventSource("/api/events");
     es.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
         if (data.state) setState(data.state);
         if (data.status) renderStatus(data.status);
+        if (data.transcript_all) replaceTranscript(data.transcript_all);
+        if (data.transcript) upsert(data.transcript);
+        if (data.clips) renderClips(data.clips);
       } catch (_) {}
     };
     refresh();
-    setInterval(refresh, 4000);
+    setInterval(refresh, 5000);
   </script>
 </body>
 </html>

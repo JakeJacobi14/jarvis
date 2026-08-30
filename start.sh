@@ -8,6 +8,7 @@
 #   ./start.sh --detach   # background voice + phone panel, then exit (headless / systemd)
 #   ./start.sh --control  # phone panel only (no voice)
 #   ./start.sh --setup    # only create/update venvs, then exit
+#   ./start.sh --spotify-login  # one-time OAuth for the built-in Spotify device
 #   ./start.sh --help
 set -euo pipefail
 
@@ -69,8 +70,9 @@ for arg in "$@"; do
     --control|-c) MODE="control" ;;
     --setup|-s) MODE="setup" ;;
     --open|-o) MODE="open" ;;
+    --spotify-login) MODE="spotify-login" ;;
     --help|-h)
-      sed -n '2,14p' "$0"
+      sed -n '2,12p' "$0"
       exit 0
       ;;
     *)
@@ -130,6 +132,9 @@ ensure_all_venvs() {
     ensure_venv "$dir"
   done
   ensure_venv "control"
+  if [[ "${JARVIS_CLIP_ENABLED:-1}" != "0" ]]; then
+    ensure_venv "clipper"
+  fi
 }
 
 pid_alive() {
@@ -151,10 +156,21 @@ lan_ip() {
 
 print_control_url() {
   local port="${JARVIS_CONTROL_PORT:-8740}"
+  local scheme="http"
+  case "$(echo "${JARVIS_CONTROL_TLS:-0}" | tr '[:upper:]' '[:lower:]')" in
+    1|on|yes|true) scheme="https" ;;
+  esac
   echo
-  echo "Phone panel:  http://$(lan_ip):$port"
-  echo "Avatar:       http://$(lan_ip):$port/avatar"
+  echo "Phone panel:  $scheme://$(lan_ip):$port"
+  echo "Avatar:       $scheme://$(lan_ip):$port/avatar"
   echo "Add that URL to your phone home screen for a full-screen app."
+  if [[ "$scheme" == "https" ]]; then
+    echo "The cert is self-signed — accept the browser warning once, then the"
+    echo "hold-to-speak mic will work from your phone."
+  else
+    echo "Set JARVIS_CONTROL_TLS=1 in .env to unlock hold-to-speak from a phone"
+    echo "(browsers only allow microphone access over https)."
+  fi
 }
 
 ensure_control() {
@@ -169,6 +185,83 @@ ensure_control() {
   fi
   start_service_bg "control" "control" "server.py"
   print_control_url
+}
+
+ensure_clipper() {
+  if [[ "${JARVIS_CLIP_ENABLED:-1}" == "0" ]]; then
+    echo "==> Clip recorder disabled (JARVIS_CLIP_ENABLED=0)"
+    return
+  fi
+  if ! command -v ffmpeg >/dev/null 2>&1; then
+    echo "NOTE: ffmpeg not found — \"clip that\" is unavailable (brew install ffmpeg)"
+    return
+  fi
+  ensure_venv "clipper"
+  start_service_bg "clipper" "clipper" "clipper.py"
+  echo "    rolling ${JARVIS_CLIP_MAX_SECONDS:-90}s A/V buffer → clips/ on \"clip that\""
+}
+
+# ── headless Spotify Connect device ─────────────────────────────────
+# The Web API can only steer an existing Spotify Connect device, so we run
+# one locally (librespot). Without it you'd have to leave the Spotify app open.
+LIBRESPOT_CACHE="$ROOT/services/spotify/cache"
+
+librespot_name() {
+  echo "${JARVIS_SPOTIFY_DEVICE:-Jarvis}"
+}
+
+# Device names may contain spaces, so build a real array.
+librespot_args() {
+  LIBRESPOT_ARGV=(
+    --name "$(librespot_name)"
+    --cache "$LIBRESPOT_CACHE"
+    --bitrate "${JARVIS_SPOTIFY_BITRATE:-160}"
+    --disable-audio-cache
+  )
+}
+
+spotify_login() {
+  if ! command -v librespot >/dev/null 2>&1; then
+    echo "ERROR: librespot not found. Install it first:"
+    echo "  brew install librespot        # macOS"
+    echo "  cargo install librespot       # anywhere with Rust"
+    exit 1
+  fi
+  mkdir -p "$LIBRESPOT_CACHE"
+  librespot_args
+  echo "==> Signing in the built-in Spotify device \"$(librespot_name)\""
+  echo "    A URL will appear below. Open it, approve, and if the final"
+  echo "    redirect fails, paste the whole 127.0.0.1 URL back here."
+  echo
+  librespot "${LIBRESPOT_ARGV[@]}" --enable-oauth
+}
+
+ensure_spotify_device() {
+  local mode
+  mode="$(echo "${JARVIS_SPOTIFY_LOCAL_DEVICE:-auto}" | tr '[:upper:]' '[:lower:]')"
+  case "$mode" in
+    0|off|no|false) return ;;
+  esac
+  if ! command -v librespot >/dev/null 2>&1; then
+    if [[ "$mode" != "auto" ]]; then
+      echo "NOTE: librespot not installed — Spotify needs the app open (brew install librespot)"
+    fi
+    return
+  fi
+  if [[ ! -f "$LIBRESPOT_CACHE/credentials.json" ]]; then
+    echo "NOTE: built-in Spotify device not signed in yet."
+    echo "      Run once:  ./start.sh --spotify-login"
+    return
+  fi
+  if pid_alive "librespot"; then
+    echo "==> Spotify device \"$(librespot_name)\" already running"
+    return
+  fi
+  echo "==> Starting Spotify device \"$(librespot_name)\"..."
+  librespot_args
+  ( exec librespot "${LIBRESPOT_ARGV[@]}" ) >>"$LOG_DIR/librespot.log" 2>&1 &
+  echo $! >"$PID_DIR/librespot.pid"
+  echo "    pid $(cat "$PID_DIR/librespot.pid")  →  logs/librespot.log"
 }
 
 ensure_broker() {
@@ -349,6 +442,11 @@ watch_timing() {
 
 # ── main ────────────────────────────────────────────────────────────
 
+if [[ "$MODE" == "spotify-login" ]]; then
+  spotify_login
+  exit 0
+fi
+
 echo "==> Ensuring Python venvs..."
 ensure_all_venvs
 ensure_tts_models
@@ -373,6 +471,7 @@ fi
 ensure_broker
 ensure_llm
 ensure_stt
+ensure_spotify_device
 
 # Fresh timing session for this run
 : >"$TIMING_LOG"
@@ -416,6 +515,7 @@ else
   echo "  Stop + panel:  ./stop.sh --all"
 fi
 
+ensure_clipper
 ensure_control
 
 if [[ "$MODE" == "detach" ]]; then

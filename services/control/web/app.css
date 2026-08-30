@@ -114,6 +114,77 @@ button:disabled { opacity: 0.45; }
   white-space: pre-wrap;
 }
 
+/* Hold-to-talk */
+button.talk {
+  width: 100%;
+  padding: 22px 12px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+button.talk.recording {
+  background: var(--listening);
+  border-color: var(--listening);
+  color: #071018;
+  box-shadow: 0 0 0 6px rgba(61, 255, 154, 0.14);
+}
+button.talk:disabled { opacity: 0.5; }
+.msg code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8em;
+  color: var(--accent);
+}
+
+/* Transcript */
+.transcript {
+  max-height: 260px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 0.9rem;
+}
+.transcript .line {
+  border-left: 2px solid var(--line);
+  padding: 2px 0 2px 10px;
+  overflow-wrap: anywhere;
+}
+.transcript .who {
+  display: block;
+  font-size: 0.65rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.transcript .line.user { border-left-color: var(--listening); }
+.transcript .line.jarvis { border-left-color: var(--speaking); }
+.transcript .line.system { border-left-color: var(--warn); color: var(--muted); }
+.transcript .line.muted { border-left-color: transparent; color: var(--muted); }
+
+/* Saved clips */
+.clips { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.clip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.8rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.clip-row .muted { color: var(--muted); }
+
 .pin-row { display: flex; gap: 8px; }
 input[type="password"], input[type="text"] {
   flex: 1;
