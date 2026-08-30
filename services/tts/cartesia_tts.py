@@ -50,7 +50,9 @@ class CartesiaTTS:
         except Exception:
             pass
         try:
-            _sonos().interrupt()
+            client = _sonos()
+            if client.tts_enabled():
+                client.interrupt()
         except Exception:
             pass
 
@@ -106,7 +108,7 @@ class CartesiaTTS:
                 sonos = None
                 try:
                     client = _sonos()
-                    if client.configured():
+                    if client.tts_enabled():
                         sonos = client
                 except Exception:
                     sonos = None

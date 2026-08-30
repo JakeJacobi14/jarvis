@@ -61,7 +61,8 @@ class JarvisTTS:
                 sys.path.insert(0, str(shared))
             import sonos_client
 
-            sonos_client.interrupt()
+            if sonos_client.tts_enabled():
+                sonos_client.interrupt()
         except Exception:
             pass
 
@@ -87,7 +88,7 @@ class JarvisTTS:
                 sys.path.insert(0, str(shared))
             import sonos_client
 
-            if sonos_client.configured():
+            if sonos_client.tts_enabled():
                 sonos_client.play_float32(samples, sample_rate)
                 played_sonos = True
         except Exception:

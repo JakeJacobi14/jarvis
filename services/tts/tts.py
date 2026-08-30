@@ -33,8 +33,10 @@ try:
         sys.path.insert(0, str(shared))
     import sonos_client
 
-    if sonos_client.configured():
+    if sonos_client.tts_enabled():
         ts(f"audio → Sonos {sonos_client.player_name()!r}")
+    elif sonos_client.configured():
+        ts("audio → local speakers (Spotify stays on Sonos)")
     else:
         ts("audio → local speakers (no Sonos found)")
 except Exception as e:

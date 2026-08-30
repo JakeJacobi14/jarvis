@@ -53,8 +53,19 @@ def wanted() -> bool:
     return True  # auto — we'll no-op if nothing is on the LAN
 
 
+def tts_enabled() -> bool:
+    """Spoken replies on the Amp. Default is local so Spotify is not interrupted."""
+    mode = os.environ.get("JARVIS_TTS_OUTPUT", "local").strip().lower() or "local"
+    if mode in {"0", "off", "no", "false", "local", "speakers", "pc", "mac"}:
+        return False
+    if mode in {"sonos", "amp", "1", "on", "yes", "true"}:
+        return configured()
+    # "auto": still keep music on Sonos; do not steal the Amp for speech.
+    return False
+
+
 def configured() -> bool:
-    """True if a Sonos speaker is actually reachable."""
+    """True if a Sonos speaker is actually reachable (Spotify / volume)."""
     return speaker() is not None
 
 
@@ -538,7 +549,14 @@ def set_volume(pct: int) -> None:
     sp = speaker()
     if sp is None:
         raise RuntimeError("No Sonos speaker found")
-    sp.volume = max(0, min(100, int(pct)))
+    pct = max(0, min(100, int(pct)))
+    try:
+        group = sp.group
+        if group is not None:
+            group.volume = pct
+    except Exception:
+        pass
+    sp.volume = pct
     if pct > 0:
         sp.mute = False
 

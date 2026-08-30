@@ -132,6 +132,24 @@ def is_muted() -> bool:
     return muted
 
 
+def _where() -> str:
+    if _use_sonos():
+        try:
+            sp = _sonos().speaker()
+            name = getattr(sp, "player_name", None) if sp is not None else None
+            return str(name).strip() or "Sonos"
+        except Exception:
+            return "Sonos"
+    return "this computer"
+
+
+def _reply(pct: int, *, muted: bool = False) -> str:
+    where = _where()
+    if muted:
+        return f"{where} is muted, otherwise {pct} percent."
+    return f"{where} is at {pct} percent."
+
+
 def set_percent(pct: int) -> str:
     pct = max(0, min(100, int(pct)))
     try:
@@ -140,7 +158,8 @@ def set_percent(pct: int) -> str:
                 _sonos().set_volume(pct)
             except Exception as e:
                 raise VolumeError(str(e)) from e
-            return f"Volume is {pct} percent."
+            actual = get_percent()
+            return _reply(actual)
         if sys.platform == "darwin":
             _darwin_set(pct)
             if pct > 0:
@@ -155,9 +174,10 @@ def set_percent(pct: int) -> str:
                 _run(["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{pct / 100:.2f}"])
                 if pct > 0:
                     _run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "0"])
+        actual = get_percent()
     except VolumeError:
         return "I couldn't change the volume."
-    return f"Volume is {pct} percent."
+    return _reply(actual)
 
 
 def nudge(delta: int) -> str:
@@ -192,9 +212,6 @@ def set_muted(muted: bool) -> str:
 
 def status_reply() -> str:
     try:
-        pct = get_percent()
-        if is_muted():
-            return f"Muted, otherwise {pct} percent."
-        return f"Volume is {pct} percent."
+        return _reply(get_percent(), muted=is_muted())
     except VolumeError:
         return "I couldn't read the volume."

@@ -6,57 +6,76 @@ import re
 import volume_client
 from commands.base import Command, CommandResult
 
+_PREFIX = r"^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?"
+_WHERE = r"(?:\s+(?:on|of|for)\s+(?:the\s+)?(?:sonos\s+)?(?:speakers?|amp|sonos))?"
+
 _UP = re.compile(
-    r"""
-    ^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?
+    rf"""
+    {_PREFIX}
     (?:
         (?:turn|volume)\s+up |
         (?:make\s+it\s+)?(?:louder|louder\s+please) |
         increase\s+(?:the\s+)?volume
     )
+    {_WHERE}
     \s*[.?!]?\s*$
     """,
     re.IGNORECASE | re.VERBOSE,
 )
 
 _DOWN = re.compile(
-    r"""
-    ^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?
+    rf"""
+    {_PREFIX}
     (?:
         (?:turn|volume)\s+down |
         (?:make\s+it\s+)?(?:quieter|softer) |
         decrease\s+(?:the\s+)?volume |
         lower\s+(?:the\s+)?volume
     )
+    {_WHERE}
     \s*[.?!]?\s*$
     """,
     re.IGNORECASE | re.VERBOSE,
 )
 
 _MUTE = re.compile(
-    r"^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?mute(?:\s+(?:the\s+)?(?:volume|sound|speakers?))?\s*[.?!]?\s*$",
+    rf"{_PREFIX}mute(?:\s+(?:the\s+)?(?:volume|sound|speakers?))?{_WHERE}\s*[.?!]?\s*$",
     re.IGNORECASE,
 )
 _UNMUTE = re.compile(
-    r"^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?unmute(?:\s+(?:the\s+)?(?:volume|sound|speakers?))?\s*[.?!]?\s*$",
+    rf"{_PREFIX}unmute(?:\s+(?:the\s+)?(?:volume|sound|speakers?))?{_WHERE}\s*[.?!]?\s*$",
     re.IGNORECASE,
 )
 
+# "decrease volume to 10%" / "set volume on sonos speakers to 10 percent"
+# must be matched before relative up/down.
 _SET = re.compile(
-    r"""
-    ^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?
-    (?:set\s+)?(?:the\s+)?volume(?:\s+to)?\s+
-    (?P<n>\d{1,3})\s*(?:percent|%)?
+    rf"""
+    {_PREFIX}
+    (?:
+        (?:set|turn|change|increase|decrease|lower|raise|put)\s+
+        (?:the\s+)?
+        (?:sonos\s+)?
+        (?:volume|sound)
+        {_WHERE}
+        \s+(?:down|up)?\s*(?:to|at)
+        |
+        (?:the\s+)?(?:sonos\s+)?volume{_WHERE}\s*(?:to|at)?
+    )
+    \s+(?P<n>\d{{1,3}})\s*(?:percent|%)?
     \s*[.?!]?\s*$
     """,
     re.IGNORECASE | re.VERBOSE,
 )
 
 _STATUS = re.compile(
-    r"""
-    ^\s*(?:hey\s+jarvis[,.]?\s+)?
-    (?:what(?:'?s|\s+is)\s+(?:the\s+)?volume |
-       how\s+loud(?:\s+is\s+it)? )
+    rf"""
+    {_PREFIX}
+    (?:
+        what(?:'?s|\s+is)\s+(?:the\s+)?(?:sonos\s+)?volume{_WHERE} |
+        how\s+loud(?:\s+is\s+it)?{_WHERE} |
+        (?:check|get)\s+(?:the\s+)?volume{_WHERE}
+    )
     \s*[.?!]?\s*$
     """,
     re.IGNORECASE | re.VERBOSE,
@@ -80,6 +99,13 @@ class VolumeCommand(Command):
             return CommandResult(
                 label=self.name, run=lambda: volume_client.set_muted(False)
             )
+        m = _SET.match(raw)
+        if m:
+            n = int(m.group("n"))
+            n = max(0, min(100, n))
+            return CommandResult(
+                label=self.name, run=lambda pct=n: volume_client.set_percent(pct)
+            )
         if _UP.match(raw):
             return CommandResult(
                 label=self.name, run=lambda: volume_client.nudge(+10)
@@ -87,12 +113,5 @@ class VolumeCommand(Command):
         if _DOWN.match(raw):
             return CommandResult(
                 label=self.name, run=lambda: volume_client.nudge(-10)
-            )
-        m = _SET.match(raw)
-        if m:
-            n = int(m.group("n"))
-            n = max(0, min(100, n))
-            return CommandResult(
-                label=self.name, run=lambda pct=n: volume_client.set_percent(pct)
             )
         return None
