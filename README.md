@@ -16,7 +16,7 @@ Local voice assistant pipeline over MQTT: wake word → STT → LLM brain → TT
 - ✅ Weather (Open-Meteo), lights (WLED / Home Assistant), camera snap, timers, volume
 - ✅ Phone control panel + talking avatar (PWA on the LAN)
 - ✅ Dashcam clips — *"Jarvis, clip that"* saves the last 30s of camera + mic
-- ✅ Live transcript on the phone panel + hold-to-speak from another room
+- ✅ Live transcript on the phone panel + always-listen from a phone or laptop mic
 - ✅ Built-in Spotify Connect speaker (spotifyd), so no Spotify app has to be open
 
 ## Requirements
@@ -137,10 +137,11 @@ JARVIS_SONOS_NAME=Amp          # room / device name in the Sonos app
 # JARVIS_AUDIO_OUTPUT=local    # force Mac speakers
 ```
 
-Spotify plays via the Amp's own Spotify Connect session (Premium). Jarvis
-speech is a short WAV the Amp fetches over HTTP from this machine
-(`JARVIS_SONOS_HTTP_PORT`, default 8742). macOS may ask to allow incoming
-connections the first time.
+Spotify is queued through the Amp the same way the Sonos app does it, so it
+takes over from HDMI/TV automatically (no one has to change the source in
+the Sonos app). Speech is a short WAV the Amp fetches over HTTP from this
+machine (`JARVIS_SONOS_HTTP_PORT`, default 8742). macOS may ask to allow
+incoming connections the first time.
 
 ### Dashcam clips
 
@@ -187,7 +188,7 @@ Everything Jarvis hears and says streams to the panel over SSE, so you can read 
 
 #### Talking to him from your phone
 
-Hold **Hold to speak**, talk, release. The recording is transcribed on the Jarvis box (Groq Whisper, falling back to Cartesia) and injected as if it had been spoken into the room — so he answers out loud on the Sonos (or local speakers) while you are somewhere else.
+Tap **Tap to listen here** once (allow the mic). The page keeps listening in the background and sends each utterance to the Jarvis box (Groq Whisper, falling back to Cartesia). That is a second microphone — the room wake-word mic stays on the whole time, so you can still say *Hey Jarvis* in the room. He answers out loud on the Sonos.
 
 Browsers only grant microphone access on a secure origin. HTTPS is on by default; `start.sh` generates a self-signed certificate. Accept the warning once per device. If you'd rather skip the warning, put the panel behind a real certificate (Tailscale Serve or Cloudflare Tunnel). `http://127.0.0.1:8740` also counts as secure if you are on the Jarvis machine itself.
 
@@ -260,7 +261,7 @@ sudo dnf install portaudio-devel ffmpeg
 
 `Jarvis.command` and Terminal auto-open are macOS-only; on Linux use `./start.sh --detach` (or `./start.sh` for a live timing feed).
 
-Wake word and always-on STT use the machine’s default input (or `JARVIS_MIC_DEVICE` in `.env`) — the phone’s hold-to-speak button is a separate path that uploads a recording instead. List devices with `services/mic-wakeword/.venv/bin/python -m sounddevice`, then either `wpctl set-default <id>` / `pactl set-default-source <name>` and restart, or set `JARVIS_MIC_DEVICE` to that index.
+Wake word and always-on STT use the machine’s default input (or `JARVIS_MIC_DEVICE` in `.env`) and stay open even when a phone or laptop is also listening. The panel’s **Tap to listen here** path uploads from that device’s mic instead of touching the room stream. List devices with `services/mic-wakeword/.venv/bin/python -m sounddevice`, then either `wpctl set-default <id>` / `pactl set-default-source <name>` and restart, or set `JARVIS_MIC_DEVICE` to that index.
 
 ## Benchmark (LLM + TTS)
 

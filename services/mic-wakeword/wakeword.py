@@ -84,6 +84,17 @@ def callback(indata, frames, time_info, status):
             mqtt_client.publish("jarvis/tts/interrupt", "stop")
             mqtt_client.publish("jarvis/status/stt", "listening")
 
-with sd.InputStream(samplerate=16000, channels=1, dtype="float32", callback=callback, blocksize=1280):
+_stream_kw = dict(
+    samplerate=16000,
+    channels=1,
+    dtype="float32",
+    callback=callback,
+    blocksize=1280,
+    latency="high",
+)
+if hasattr(sd, "WasapiSettings"):
+    _stream_kw["extra_settings"] = sd.WasapiSettings(exclusive=False)
+
+with sd.InputStream(**_stream_kw):
     while True:
         sd.sleep(100)

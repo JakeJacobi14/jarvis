@@ -378,6 +378,19 @@ def play_query(query: str) -> str:
     artists = ", ".join(_artist_names(track))
     label = f"{name} by {artists}" if artists else name
 
+    # Amp on HDMI/TV ignores Spotify Connect until something uses the Sonos
+    # queue (same path as the app). Do that first; Web API is the fallback.
+    try:
+        shared = Path(__file__).resolve().parents[1] / "sonos"
+        if str(shared) not in sys.path:
+            sys.path.insert(0, str(shared))
+        import sonos_client
+
+        if sonos_client.configured() and sonos_client.play_spotify_uri(uri, title=label):
+            return f"Playing {label}."
+    except Exception:
+        pass
+
     device_id = _ensure_device()
     params = {"device_id": device_id} if device_id else None
     resp = _request(
@@ -395,8 +408,52 @@ def play_query(query: str) -> str:
     return f"Playing {label}."
 
 
+def _sonos_mod():
+    shared = Path(__file__).resolve().parents[1] / "sonos"
+    if str(shared) not in sys.path:
+        sys.path.insert(0, str(shared))
+    import sonos_client
+
+    return sonos_client
+
+
+def _sonos_control(action: str) -> str | None:
+    """Drive the Amp directly. None = fall through to the Web API."""
+    try:
+        sonos = _sonos_mod()
+        if not sonos.configured():
+            return None
+        if sonos.on_tv() and action in {
+            "pause",
+            "resume",
+            "resume_or_ask",
+            "next",
+            "previous",
+        }:
+            return None
+        if action == "pause":
+            sonos.pause()
+            return "Paused."
+        if action in {"resume", "resume_or_ask"}:
+            sonos.resume()
+            return "Resuming."
+        if action == "next":
+            sonos.next_track()
+            return "Skipping."
+        if action == "previous":
+            sonos.previous_track()
+            return "Going back."
+    except Exception:
+        return None
+    return None
+
+
 def control(action: str) -> str:
     """pause | resume | next | previous | resume_or_ask → spoken confirmation."""
+    via_sonos = _sonos_control(action)
+    if via_sonos:
+        return via_sonos
+
     if action == "resume_or_ask":
         # Try resuming; if nothing is active, ask for a song instead of failing.
         try:

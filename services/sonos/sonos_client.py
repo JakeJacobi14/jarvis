@@ -1,8 +1,9 @@
 """Local Sonos control via the LAN UPnP API (SoCo).
 
-Used for Jarvis speech (play a short WAV the Amp can fetch) and for
-volume. Spotify music is steered separately through the Spotify Web API
-onto the Amp's Connect session — see spotify_client.py.
+Speech is a short WAV the Amp fetches over HTTP. Spotify is queued the
+same way the Sonos app does it (ShareLink), so the Amp leaves HDMI/TV
+instead of playing Connect in the background. Volume and transport
+(pause/skip) also go through here when the Amp is the speaker.
 """
 from __future__ import annotations
 
@@ -380,6 +381,140 @@ def play_float32(samples, sample_rate: int) -> float:
     seconds = float(arr.size) / float(sample_rate or 1)
     play_wav_bytes(float32_to_wav(arr, sample_rate), seconds=seconds)
     return seconds
+
+
+def _coordinator():
+    sp = speaker()
+    if sp is None:
+        return None
+    try:
+        if not sp.is_coordinator:
+            return sp.group.coordinator
+    except Exception:
+        pass
+    return sp
+
+
+def on_tv() -> bool:
+    """True when the Amp is in HDMI/TV (or line-in) mode instead of music."""
+    sp = _coordinator()
+    if sp is None:
+        return False
+    try:
+        if bool(getattr(sp, "is_playing_tv", False)) or bool(
+            getattr(sp, "is_playing_line_in", False)
+        ):
+            return True
+    except Exception:
+        pass
+    try:
+        uri = ((sp.get_current_media_info() or {}).get("uri") or "").lower()
+    except Exception:
+        uri = ""
+    return uri.startswith("x-sonos-htastream:") or ":spdif" in uri or ":optical" in uri
+
+
+def _xml_escape(text: str) -> str:
+    return (
+        (text or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _leave_tv(sp) -> None:
+    """Point the Amp at its music queue so HDMI/ARC is no longer selected."""
+    try:
+        if bool(getattr(sp, "is_playing_tv", False)):
+            sp.stop()
+    except Exception:
+        pass
+    try:
+        queue_uri = f"x-rincon-queue:{sp.uid}#0"
+        sp.avTransport.SetAVTransportURI(
+            [
+                ("InstanceID", 0),
+                ("CurrentURI", queue_uri),
+                ("CurrentURIMetaData", ""),
+            ]
+        )
+    except Exception:
+        pass
+
+
+def play_spotify_uri(uri: str, title: str = "") -> bool:
+    """Play a Spotify track through the Amp, switching it off TV if needed.
+
+    Uses the same Sonos music-service queue path as the official app, which
+    is what actually takes HDMI/ARC away from the TV. Spotify Connect via
+    the Web API often starts in the background and leaves the Amp on TV.
+    """
+    sp = _coordinator()
+    if sp is None:
+        return False
+    raw = (uri or "").strip()
+    if raw.startswith("https://open.spotify.com/"):
+        pass
+    elif raw.startswith("spotify:"):
+        pass
+    else:
+        return False
+
+    try:
+        from soco.plugins.sharelink import ShareLinkPlugin
+    except ImportError:
+        return False
+
+    plugin = ShareLinkPlugin(sp)
+    if not plugin.is_share_link(raw):
+        # Web API gives spotify:track:id; some SoCo builds want the https form.
+        parts = raw.split(":")
+        if len(parts) >= 3 and parts[0] == "spotify":
+            raw = f"https://open.spotify.com/{parts[1]}/{parts[2]}"
+        if not plugin.is_share_link(raw):
+            return False
+    try:
+        if on_tv():
+            _leave_tv(sp)
+        pos = plugin.add_share_link_to_queue(
+            raw, dc_title=_xml_escape(title or "Spotify")
+        )
+        idx = max(0, int(pos) - 1)
+        sp.play_from_queue(idx)
+        return True
+    except Exception as e:
+        print(f"sonos play_spotify_uri failed: {e}", flush=True)
+        return False
+
+
+def pause() -> None:
+    sp = _coordinator()
+    if sp is None:
+        raise RuntimeError("No Sonos speaker found")
+    sp.pause()
+
+
+def resume() -> None:
+    sp = _coordinator()
+    if sp is None:
+        raise RuntimeError("No Sonos speaker found")
+    sp.play()
+
+
+def next_track() -> None:
+    sp = _coordinator()
+    if sp is None:
+        raise RuntimeError("No Sonos speaker found")
+    sp.next()
+
+
+def previous_track() -> None:
+    sp = _coordinator()
+    if sp is None:
+        raise RuntimeError("No Sonos speaker found")
+    sp.previous()
 
 
 # ── volume ───────────────────────────────────────────────────────────
