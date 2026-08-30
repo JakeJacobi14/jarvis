@@ -157,8 +157,9 @@ lan_ip() {
 print_control_url() {
   local port="${JARVIS_CONTROL_PORT:-8740}"
   local scheme="http"
-  case "$(echo "${JARVIS_CONTROL_TLS:-0}" | tr '[:upper:]' '[:lower:]')" in
-    1|on|yes|true) scheme="https" ;;
+  case "$(echo "${JARVIS_CONTROL_TLS:-1}" | tr '[:upper:]' '[:lower:]')" in
+    0|off|no|false) scheme="http" ;;
+    *) scheme="https" ;;
   esac
   echo
   echo "Phone panel:  $scheme://$(lan_ip):$port"
@@ -166,10 +167,7 @@ print_control_url() {
   echo "Add that URL to your phone home screen for a full-screen app."
   if [[ "$scheme" == "https" ]]; then
     echo "The cert is self-signed — accept the browser warning once, then the"
-    echo "hold-to-speak mic will work from your phone."
-  else
-    echo "Set JARVIS_CONTROL_TLS=1 in .env to unlock hold-to-speak from a phone"
-    echo "(browsers only allow microphone access over https)."
+    echo "hold-to-speak mic will work. http:// on the same port redirects here."
   fi
 }
 

@@ -72,7 +72,7 @@ PORT = int(os.environ.get("JARVIS_CONTROL_PORT", "8740"))
 PIN = os.environ.get("JARVIS_CONTROL_PIN", "").strip()
 BROKER = os.environ.get("JARVIS_MQTT_HOST", "127.0.0.1").strip() or "127.0.0.1"
 BROKER_PORT = int(os.environ.get("JARVIS_MQTT_PORT", "1883"))
-USE_TLS = _flag("JARVIS_CONTROL_TLS", False)
+USE_TLS = _flag("JARVIS_CONTROL_TLS", True)
 
 GROQ_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 GROQ_STT_MODEL = (
@@ -213,6 +213,8 @@ def stack_status() -> dict:
         "clipper": _states.get("clipper", "idle"),
         "pin_required": bool(PIN),
         "mic_relay": stt_relay_ready(),
+        "tls": USE_TLS,
+        "https_url": f"https://{lan_ip()}:{PORT}",
     }
 
 
@@ -509,10 +511,28 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.write(chunk)
                 remaining -= len(chunk)
 
+    def _is_https(self) -> bool:
+        return isinstance(self.connection, ssl.SSLSocket)
+
+    def _redirect_https(self) -> bool:
+        """Send browsers from http://LAN-IP to https so the mic is allowed."""
+        if not USE_TLS or self._is_https():
+            return False
+        host = self.headers.get("Host") or f"{lan_ip()}:{PORT}"
+        loc = f"https://{host}{self.path}"
+        self.send_response(301)
+        self.send_header("Location", loc)
+        self.send_header("Content-Length", "0")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        return True
+
     def do_HEAD(self):
         self.do_GET()
 
     def do_GET(self):
+        if self._redirect_https():
+            return
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
 
@@ -597,6 +617,8 @@ class Handler(SimpleHTTPRequestHandler):
         self._send(404, b"not found", "text/plain")
 
     def do_POST(self):
+        if self._redirect_https():
+            return
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -741,6 +763,22 @@ class Handler(SimpleHTTPRequestHandler):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def __init__(self, addr, handler, ssl_ctx=None):
+        super().__init__(addr, handler)
+        self.ssl_ctx = ssl_ctx
+
+    def get_request(self):
+        sock, addr = self.socket.accept()
+        if self.ssl_ctx is None:
+            return sock, addr
+        try:
+            peek = sock.recv(1, socket.MSG_PEEK)
+        except OSError:
+            peek = b""
+        if peek[:1] == b"\x16":
+            sock = self.ssl_ctx.wrap_socket(sock, server_side=True)
+        return sock, addr
 
 
 # ── tls (needed for phone mic access over LAN) ───────────────────────
@@ -902,19 +940,22 @@ def main() -> int:
     CLIPS.mkdir(parents=True, exist_ok=True)
     threading.Thread(target=mqtt_loop, daemon=True).start()
 
-    httpd = Server((HOST, PORT), Handler)
+    ctx = None
     scheme = "http"
     if USE_TLS:
         pair = ensure_cert()
         if pair:
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(certfile=str(pair[0]), keyfile=str(pair[1]))
-            httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
             scheme = "https"
+        else:
+            ts("TLS cert unavailable — serving plain http (mic will be blocked on LAN IPs)")
 
+    httpd = Server((HOST, PORT), Handler, ssl_ctx=ctx)
     ts(f"control panel on {scheme}://{HOST}:{PORT}  (PIN={'on' if PIN else 'off'})")
-    if scheme == "http":
-        ts("phone mic needs https — set JARVIS_CONTROL_TLS=1 to enable it")
+    if scheme == "https":
+        ts(f"open https://{lan_ip()}:{PORT}  — accept the certificate warning once for the mic")
+        ts(f"http://{lan_ip()}:{PORT} redirects there")
     if not stt_relay_ready():
         ts("no GROQ_API_KEY/CARTESIA_API_KEY — phone mic will fall back to typing")
     try:

@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#070b14">
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/app.css?v=3">
+  <link rel="stylesheet" href="/app.css?v=4">
   <title>Jarvis</title>
 </head>
 <body class="dashboard is-idle">
@@ -274,13 +274,23 @@
     let holding = false;
     let autoStop = null;
 
+    const httpsUrl = "https://" + location.host + "/";
+    const localUrl = "http://127.0.0.1:" + (location.port || "8740") + "/";
+    if (!window.isSecureContext
+        && location.protocol === "http:"
+        && location.hostname !== "localhost"
+        && location.hostname !== "127.0.0.1") {
+      location.replace("https://" + location.host + location.pathname + location.search);
+    }
+
     if (!canRecord) {
       talkBtn.disabled = true;
-      talkBtn.textContent = "Mic needs https";
+      talkBtn.textContent = "Open via https";
       talkMsg.innerHTML = location.protocol === "https:"
         ? "This browser won't share the microphone."
-        : "Type commands below, or serve the panel over https "
-          + "(<code>JARVIS_CONTROL_TLS=1</code>) to unlock the mic.";
+        : "The mic only works on a secure page. Open "
+          + `<a href="${httpsUrl}">${httpsUrl}</a> and accept the certificate warning once. `
+          + `On this computer you can also use <a href="${localUrl}">${localUrl}</a>.`;
     }
 
     function pickMime() {

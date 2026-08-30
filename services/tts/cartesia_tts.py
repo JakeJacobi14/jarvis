@@ -1,13 +1,24 @@
-"""Cartesia Sonic TTS — streams PCM and plays via sounddevice."""
+"""Cartesia Sonic TTS — streams PCM, plays locally or through Sonos."""
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
 from cartesia import Cartesia
+
+
+def _sonos():
+    shared = Path(__file__).resolve().parents[1] / "sonos"
+    if str(shared) not in sys.path:
+        sys.path.insert(0, str(shared))
+    import sonos_client
+
+    return sonos_client
 
 # Archie — en-GB male (closest to prior Kokoro bm_lewis vibe)
 DEFAULT_VOICE_ID = "ef191366-f52f-447a-a398-ed8c0f2943a1"
@@ -36,6 +47,10 @@ class CartesiaTTS:
         self._stop.set()
         try:
             sd.stop()
+        except Exception:
+            pass
+        try:
+            _sonos().interrupt()
         except Exception:
             pass
 
@@ -87,24 +102,60 @@ class CartesiaTTS:
                 ctx.push(text)
                 ctx.no_more_inputs()
 
-                with sd.OutputStream(
-                    samplerate=self.sample_rate,
-                    channels=1,
-                    dtype="float32",
-                ) as stream:
+                chunks: list[np.ndarray] = []
+                sonos = None
+                try:
+                    client = _sonos()
+                    if client.configured():
+                        sonos = client
+                except Exception:
+                    sonos = None
+
+                def _ingest(audio_bytes: bytes):
+                    nonlocal first_audio_at
+                    samples = np.frombuffer(audio_bytes, dtype=np.float32)
+                    if not samples.size:
+                        return
+                    if first_audio_at is None:
+                        first_audio_at = time.perf_counter()
+                    if sonos is None:
+                        stream.write(samples.reshape(-1, 1))
+                    else:
+                        chunks.append(samples.copy())
+
+                if sonos is None:
+                    with sd.OutputStream(
+                        samplerate=self.sample_rate,
+                        channels=1,
+                        dtype="float32",
+                    ) as stream:
+                        for response in ctx.receive():
+                            if self._stop.is_set():
+                                break
+                            rtype = getattr(response, "type", None)
+                            if rtype == "chunk":
+                                audio_bytes = getattr(response, "audio", None)
+                                if audio_bytes:
+                                    _ingest(audio_bytes)
+                            elif rtype == "error":
+                                msg = (
+                                    getattr(response, "message", None)
+                                    or getattr(response, "title", None)
+                                    or "cartesia error"
+                                )
+                                raise RuntimeError(msg)
+                            elif rtype == "done":
+                                break
+                else:
+                    stream = None  # unused; ingest buffers instead
                     for response in ctx.receive():
                         if self._stop.is_set():
                             break
                         rtype = getattr(response, "type", None)
                         if rtype == "chunk":
                             audio_bytes = getattr(response, "audio", None)
-                            if not audio_bytes:
-                                continue
-                            if first_audio_at is None:
-                                first_audio_at = time.perf_counter()
-                            samples = np.frombuffer(audio_bytes, dtype=np.float32)
-                            if samples.size:
-                                stream.write(samples.reshape(-1, 1))
+                            if audio_bytes:
+                                _ingest(audio_bytes)
                         elif rtype == "error":
                             msg = (
                                 getattr(response, "message", None)
@@ -114,6 +165,8 @@ class CartesiaTTS:
                             raise RuntimeError(msg)
                         elif rtype == "done":
                             break
+                    if chunks and not self._stop.is_set():
+                        sonos.play_float32(np.concatenate(chunks), self.sample_rate)
             except Exception:
                 # Next utterance opens a fresh socket.
                 self._drop_ws()

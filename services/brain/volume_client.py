@@ -1,4 +1,4 @@
-"""OS speaker volume. macOS via osascript; Linux via pactl or wpctl."""
+"""Speaker volume. Sonos Amp when present; else macOS osascript or Linux pactl/wpctl."""
 from __future__ import annotations
 
 import os
@@ -6,10 +6,27 @@ import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 
 class VolumeError(RuntimeError):
     pass
+
+
+def _sonos():
+    shared = Path(__file__).resolve().parents[1] / "sonos"
+    if str(shared) not in sys.path:
+        sys.path.insert(0, str(shared))
+    import sonos_client
+
+    return sonos_client
+
+
+def _use_sonos() -> bool:
+    try:
+        return _sonos().configured()
+    except Exception:
+        return False
 
 
 def _run(argv: list[str]) -> str:
@@ -86,6 +103,11 @@ def _wpctl_get() -> tuple[int, bool]:
 
 
 def get_percent() -> int:
+    if _use_sonos():
+        try:
+            return _sonos().get_volume()
+        except Exception as e:
+            raise VolumeError(str(e)) from e
     if sys.platform == "darwin":
         return _darwin_get()
     backend = _linux_backend()
@@ -96,6 +118,11 @@ def get_percent() -> int:
 
 
 def is_muted() -> bool:
+    if _use_sonos():
+        try:
+            return _sonos().is_muted()
+        except Exception as e:
+            raise VolumeError(str(e)) from e
     if sys.platform == "darwin":
         return _darwin_muted()
     backend = _linux_backend()
@@ -108,6 +135,12 @@ def is_muted() -> bool:
 def set_percent(pct: int) -> str:
     pct = max(0, min(100, int(pct)))
     try:
+        if _use_sonos():
+            try:
+                _sonos().set_volume(pct)
+            except Exception as e:
+                raise VolumeError(str(e)) from e
+            return f"Volume is {pct} percent."
         if sys.platform == "darwin":
             _darwin_set(pct)
             if pct > 0:
@@ -137,6 +170,12 @@ def nudge(delta: int) -> str:
 
 def set_muted(muted: bool) -> str:
     try:
+        if _use_sonos():
+            try:
+                _sonos().set_muted(muted)
+            except Exception as e:
+                raise VolumeError(str(e)) from e
+            return "Muted." if muted else "Unmuted."
         if sys.platform == "darwin":
             _darwin_set_muted(muted)
         else:

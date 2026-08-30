@@ -3,15 +3,17 @@
 Requires Spotify Premium and a one-time OAuth (see spotify_auth.py):
   SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN
 
-The Web API only steers existing Spotify Connect devices, so start.sh
-downloads spotifyd and runs it as a speaker named after JARVIS_SPOTIFY_DEVICE.
-Preferring that device is what lets playback work with no Spotify app open.
+The Web API only steers existing Spotify Connect devices. When a Sonos Amp
+is on the LAN we prefer that speaker; otherwise start.sh runs spotifyd as a
+fallback named JARVIS_SPOTIFY_DEVICE.
 """
 from __future__ import annotations
 
 import os
 import re
+import sys
 import time
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -112,16 +114,44 @@ def _transfer(device_id: str) -> None:
         pass
 
 
-def _ensure_device() -> str | None:
-    """Return a device id to target, waking the local Jarvis speaker first.
+def _sonos_hints() -> list[str]:
+    try:
+        shared = Path(__file__).resolve().parents[1] / "sonos"
+        if str(shared) not in sys.path:
+            sys.path.insert(0, str(shared))
+        import sonos_client
 
-    spotifyd (started by start.sh) registers a Connect device named after
-    JARVIS_SPOTIFY_DEVICE. Preferring it means music plays on this machine
-    without the Spotify app running anywhere.
-    """
+        return sonos_client.spotify_hints()
+    except Exception:
+        extra = os.environ.get("JARVIS_SONOS_NAME", "").strip()
+        return [extra.lower()] if extra else []
+
+
+def _score_device(dev: dict[str, Any]) -> int:
+    name = (dev.get("name") or "").strip().lower()
+    dtype = (dev.get("type") or "").strip().lower()
+    score = 0
+    for hint in _sonos_hints():
+        if hint and name == hint:
+            score = max(score, 100)
+        elif hint and hint in name:
+            score = max(score, 80)
+    if "sonos" in name or "sonos" in dtype:
+        score = max(score, 70)
+    if "amp" in name:
+        score = max(score, 60)
+    wanted = _preferred_name().lower()
+    if wanted and name == wanted:
+        score = max(score, 40)
+    if dev.get("is_active"):
+        score += 5
+    return score
+
+
+def _ensure_device() -> str | None:
+    """Return a device id, preferring the Sonos Amp when it's on the account."""
     devices = list_devices()
     if not devices:
-        # A just-started spotifyd can take a moment to register.
         for _ in range(2):
             time.sleep(1.0)
             devices = list_devices()
@@ -130,23 +160,16 @@ def _ensure_device() -> str | None:
     if not devices:
         raise SpotifyError(NO_DEVICE_MSG)
 
-    wanted = _preferred_name().lower()
-    local = next(
-        (d for d in devices if (d.get("name") or "").strip().lower() == wanted), None
-    )
-    if local and local.get("id"):
-        if not local.get("is_active"):
-            _transfer(local["id"])
-        return local["id"]
-
-    active = next((d for d in devices if d.get("is_active")), None)
-    if active:
-        return active.get("id")
-
-    did = devices[0].get("id")
+    ranked = sorted(devices, key=_score_device, reverse=True)
+    best = ranked[0]
+    if _score_device(best) <= 0:
+        active = next((d for d in devices if d.get("is_active")), None)
+        best = active or best
+    did = best.get("id")
     if not did:
         raise SpotifyError("No usable Spotify device")
-    _transfer(did)
+    if not best.get("is_active"):
+        _transfer(did)
     return did
 
 

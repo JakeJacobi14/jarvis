@@ -1,8 +1,10 @@
 from datetime import datetime
 import queue
+import sys
 import threading
 import time
 import os
+from pathlib import Path
 import sounddevice as sd
 import paho.mqtt.client as mqtt
 from jarvis_tts import create_tts, provider_name
@@ -25,6 +27,18 @@ provider = provider_name()
 ts(f"loading TTS provider={provider}...")
 _t_load = time.perf_counter()
 tts = create_tts()
+try:
+    shared = Path(__file__).resolve().parents[1] / "sonos"
+    if str(shared) not in sys.path:
+        sys.path.insert(0, str(shared))
+    import sonos_client
+
+    if sonos_client.configured():
+        ts(f"audio → Sonos {sonos_client.player_name()!r}")
+    else:
+        ts("audio → local speakers (no Sonos found)")
+except Exception as e:
+    ts(f"audio → local speakers ({e})")
 # Warm-up / confirm audio path
 tts.say("Loading.")
 ts(f"ready in {time.perf_counter() - _t_load:.2f}s")

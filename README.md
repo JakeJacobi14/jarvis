@@ -63,7 +63,7 @@ cp .env.example .env
 | `HA_URL` / `HA_TOKEN` / `HA_LIGHT_ENTITY` | — | Home Assistant lights if not using WLED |
 | `JARVIS_CONTROL_PORT` | `8740` | phone panel + avatar |
 | `JARVIS_CONTROL_PIN` | — | optional PIN for the panel |
-| `JARVIS_CONTROL_TLS` | `0` | serve https — required for the phone mic |
+| `JARVIS_CONTROL_TLS` | `1` | https on by default so the hold-to-speak mic works |
 | `JARVIS_CLIP_ENABLED` | `1` | rolling dashcam buffer for `clip that` |
 | `JARVIS_CLIP_SECONDS` | `30` | default clip length |
 | `JARVIS_CLIP_MAX_SECONDS` | `90` | buffer depth / longest clip you can ask for |
@@ -124,6 +124,24 @@ Skip step 2 and everything still works the old way — you just have to leave
 Spotify open on some device. Set `JARVIS_SPOTIFY_LOCAL_DEVICE=off` to never
 start it.
 
+### Sonos Amp
+
+If a Sonos speaker is on the LAN, Jarvis sends **speech, Spotify, and volume**
+through it instead of the Mac speakers. Discovery is automatic; if you have
+more than one, pin it:
+
+```bash
+# .env
+JARVIS_SONOS_NAME=Amp          # room / device name in the Sonos app
+# JARVIS_SONOS_IP=192.168.1.50
+# JARVIS_AUDIO_OUTPUT=local    # force Mac speakers
+```
+
+Spotify plays via the Amp's own Spotify Connect session (Premium). Jarvis
+speech is a short WAV the Amp fetches over HTTP from this machine
+(`JARVIS_SONOS_HTTP_PORT`, default 8742). macOS may ask to allow incoming
+connections the first time.
+
 ### Dashcam clips
 
 Say *clip that* and the last 30 seconds of camera + microphone are written to
@@ -159,7 +177,7 @@ The box does not need a monitor. The control panel binds to the LAN:
 ./start.sh --detach      # voice + panel, then exit (systemd / SSH)
 ```
 
-On your phone, open `http://<pc-ip>:8740`. Start / Stop the voice stack, take a photo, save a clip, read the live transcript, watch the timing log. `/avatar` is a full-screen talking visor — drop `idle.png` + `talk.png` into `services/control/web/character/` to use your own 2D model (mouth-open vs idle). Add the URL to the home screen for a standalone “app”.
+On your phone, open `https://<pc-ip>:8740` (accept the self-signed cert warning once). `http://` on the same port redirects there. Start / Stop the voice stack, take a photo, save a clip, read the live transcript, watch the timing log. `/avatar` is a full-screen talking visor — drop `idle.png` + `talk.png` into `services/control/web/character/` to use your own 2D model (mouth-open vs idle). Add the URL to the home screen for a standalone “app”.
 
 Optional PIN: `JARVIS_CONTROL_PIN` in `.env`. Keep it on the apartment LAN; do not port-forward it.
 
@@ -169,18 +187,11 @@ Everything Jarvis hears and says streams to the panel over SSE, so you can read 
 
 #### Talking to him from your phone
 
-Hold **Hold to speak**, talk, release. The recording is transcribed on the Jarvis box (Groq Whisper, falling back to Cartesia) and injected as if it had been spoken into the room — so he answers out loud on the computer's speakers while you are somewhere else.
+Hold **Hold to speak**, talk, release. The recording is transcribed on the Jarvis box (Groq Whisper, falling back to Cartesia) and injected as if it had been spoken into the room — so he answers out loud on the Sonos (or local speakers) while you are somewhere else.
 
-Browsers only grant microphone access on a secure origin, so this needs https:
+Browsers only grant microphone access on a secure origin. HTTPS is on by default; `start.sh` generates a self-signed certificate. Accept the warning once per device. If you'd rather skip the warning, put the panel behind a real certificate (Tailscale Serve or Cloudflare Tunnel). `http://127.0.0.1:8740` also counts as secure if you are on the Jarvis machine itself.
 
-```bash
-# .env
-JARVIS_CONTROL_TLS=1
-```
-
-`start.sh` generates a self-signed certificate on first boot. Your phone will warn about the unknown issuer once per device; accept it and the mic works. If you would rather not click through a warning, put the panel behind a real certificate (Tailscale Serve or Cloudflare Tunnel both do this for free).
-
-Without https the mic button is disabled and explains why. The **type a command** box next to it always works, over plain http, with no transcription key needed.
+The **type a command** box next to the mic always works.
 
 Linux box at boot:
 

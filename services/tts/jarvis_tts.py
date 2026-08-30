@@ -53,6 +53,17 @@ class JarvisTTS:
             sd.stop()
         except Exception:
             pass
+        try:
+            shared = Path(__file__).resolve().parents[1] / "sonos"
+            import sys
+
+            if str(shared) not in sys.path:
+                sys.path.insert(0, str(shared))
+            import sonos_client
+
+            sonos_client.interrupt()
+        except Exception:
+            pass
 
     def say(self, text: str):
         """Synthesize and play. Returns (synth_seconds, play_seconds)."""
@@ -67,8 +78,23 @@ class JarvisTTS:
         synth_s = time.perf_counter() - t0
 
         t1 = time.perf_counter()
-        sd.play(samples, sample_rate)
-        sd.wait()
+        played_sonos = False
+        try:
+            shared = Path(__file__).resolve().parents[1] / "sonos"
+            import sys
+
+            if str(shared) not in sys.path:
+                sys.path.insert(0, str(shared))
+            import sonos_client
+
+            if sonos_client.configured():
+                sonos_client.play_float32(samples, sample_rate)
+                played_sonos = True
+        except Exception:
+            played_sonos = False
+        if not played_sonos:
+            sd.play(samples, sample_rate)
+            sd.wait()
         play_s = time.perf_counter() - t1
         return synth_s, play_s
 
