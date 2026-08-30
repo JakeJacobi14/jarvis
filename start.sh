@@ -8,7 +8,7 @@
 #   ./start.sh --detach   # background voice + phone panel, then exit (headless / systemd)
 #   ./start.sh --control  # phone panel only (no voice)
 #   ./start.sh --setup    # only create/update venvs, then exit
-#   ./start.sh --spotify-login  # one-time OAuth for the built-in Spotify device
+#   ./start.sh --spotify-login  # one-time OAuth for the built-in spotifyd speaker
 #   ./start.sh --help
 set -euo pipefail
 
@@ -201,39 +201,202 @@ ensure_clipper() {
   echo "    rolling ${JARVIS_CLIP_MAX_SECONDS:-90}s A/V buffer → clips/ on \"clip that\""
 }
 
-# ── headless Spotify Connect device ─────────────────────────────────
-# The Web API can only steer an existing Spotify Connect device, so we run
-# one locally (librespot). Without it you'd have to leave the Spotify app open.
-LIBRESPOT_CACHE="$ROOT/services/spotify/cache"
+# ── headless Spotify Connect device (spotifyd) ──────────────────────
+# The Web API can only steer an existing Spotify Connect device, so we
+# download spotifyd into the repo and run it as a local speaker named
+# JARVIS_SPOTIFY_DEVICE. Without it you'd have to leave the Spotify app open.
+SPOTIFY_DIR="$ROOT/services/spotify"
+SPOTIFYD_BIN="$SPOTIFY_DIR/bin/spotifyd"
+SPOTIFYD_CONF="$SPOTIFY_DIR/spotifyd.conf"
+SPOTIFYD_CACHE="$SPOTIFY_DIR/cache"
+SPOTIFYD_VERSION="${JARVIS_SPOTIFYD_VERSION:-0.4.2}"
 
-librespot_name() {
+spotifyd_name() {
   echo "${JARVIS_SPOTIFY_DEVICE:-Jarvis}"
 }
 
-# Device names may contain spaces, so build a real array.
-librespot_args() {
-  LIBRESPOT_ARGV=(
-    --name "$(librespot_name)"
-    --cache "$LIBRESPOT_CACHE"
-    --bitrate "${JARVIS_SPOTIFY_BITRATE:-160}"
-    --disable-audio-cache
-  )
+spotifyd_logged_in() {
+  [[ -f "$SPOTIFYD_CACHE/oauth/credentials.json" ]]
+}
+
+write_spotifyd_conf() {
+  local bitrate name
+  name="$(spotifyd_name)"
+  bitrate="${JARVIS_SPOTIFY_BITRATE:-160}"
+  case "$bitrate" in
+    96|160|320) ;;
+    *) bitrate="160" ;;
+  esac
+  mkdir -p "$SPOTIFY_DIR" "$SPOTIFYD_CACHE"
+  {
+    echo "[global]"
+    echo "device_name = \"${name}\""
+    echo "device_type = \"computer\""
+    echo "bitrate = ${bitrate}"
+    echo "cache_path = \"${SPOTIFYD_CACHE}\""
+    echo "no_audio_cache = true"
+    if spotifyd_logged_in; then
+      # Stay attached to this account; a phone picking the speaker would
+      # otherwise steal the session and Web API playback would go quiet.
+      echo "disable_discovery = true"
+    fi
+  } >"$SPOTIFYD_CONF"
+}
+
+spotifyd_asset() {
+  local os arch variant
+  case "$OS" in
+    Darwin) os="macos" ;;
+    Linux) os="linux" ;;
+    *)
+      echo ""
+      return 1
+      ;;
+  esac
+  case "$(uname -m)" in
+    arm64|aarch64) arch="aarch64" ;;
+    x86_64|amd64) arch="x86_64" ;;
+    armv7l|armv7) arch="armv7" ;;
+    *)
+      echo ""
+      return 1
+      ;;
+  esac
+  # macOS "default" is linked against Homebrew dbus. "slim" only needs
+  # PortAudio (CoreAudio) and actually runs on a stock Mac.
+  # Linux "full" covers Pulse/ALSA on a headless box.
+  if [[ "$os" == "macos" ]]; then
+    variant="slim"
+  else
+    variant="full"
+  fi
+  echo "spotifyd-${os}-${arch}-${variant}.tar.gz"
+}
+
+spotifyd_ok() {
+  [[ -x "$SPOTIFYD_BIN" ]] || return 1
+  "$SPOTIFYD_BIN" --version >/dev/null 2>&1
+}
+
+fix_spotifyd_libs() {
+  # Official macOS builds are linked against Homebrew dylibs. Install any
+  # that are missing so the downloaded binary can actually start.
+  command -v brew >/dev/null 2>&1 || return 1
+  local err formula
+  err="$("$SPOTIFYD_BIN" --version 2>&1 || true)"
+  [[ "$err" == *"Library not loaded"* ]] || return 1
+  echo "==> spotifyd is missing Homebrew libraries — installing..."
+  while read -r formula; do
+    [[ -n "$formula" ]] || continue
+    echo "    brew install $formula"
+    brew install "$formula" >/dev/null || true
+  done < <(echo "$err" | grep -oE '/opt/homebrew/opt/[^/]+' | sed 's|.*/||' | sort -u)
+  spotifyd_ok
+}
+
+fetch_spotifyd_tarball() {
+  local asset url tmp archive found
+  asset="$(spotifyd_asset || true)"
+  if [[ -z "$asset" ]]; then
+    echo "NOTE: no spotifyd binary for $OS/$(uname -m)"
+    return 1
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "NOTE: curl not found — cannot download spotifyd"
+    return 1
+  fi
+  url="https://github.com/Spotifyd/spotifyd/releases/download/v${SPOTIFYD_VERSION}/${asset}"
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/jarvis-spotifyd.XXXXXX")"
+  archive="$tmp/$asset"
+  echo "==> Downloading spotifyd v${SPOTIFYD_VERSION} ($asset)..."
+  if ! curl -fsSL --retry 3 --retry-delay 1 -o "$archive" "$url"; then
+    echo "NOTE: spotifyd download failed ($url)"
+    rm -rf "$tmp"
+    return 1
+  fi
+  if ! tar -xzf "$archive" -C "$tmp"; then
+    echo "NOTE: could not extract spotifyd archive"
+    rm -rf "$tmp"
+    return 1
+  fi
+  found="$(find "$tmp" -type f -name spotifyd -print -quit)"
+  if [[ -z "$found" ]]; then
+    echo "NOTE: spotifyd binary missing from archive"
+    rm -rf "$tmp"
+    return 1
+  fi
+  mkdir -p "$(dirname "$SPOTIFYD_BIN")"
+  rm -f "$SPOTIFYD_BIN"
+  mv "$found" "$SPOTIFYD_BIN"
+  chmod +x "$SPOTIFYD_BIN"
+  if [[ "$OS" == "Darwin" ]]; then
+    xattr -d com.apple.quarantine "$SPOTIFYD_BIN" 2>/dev/null || true
+  fi
+  rm -rf "$tmp"
+  echo "    installed $SPOTIFYD_BIN"
+  return 0
+}
+
+link_system_spotifyd() {
+  local src=""
+  if command -v spotifyd >/dev/null 2>&1; then
+    src="$(command -v spotifyd)"
+  elif command -v brew >/dev/null 2>&1 && [[ -x "$(brew --prefix 2>/dev/null)/bin/spotifyd" ]]; then
+    src="$(brew --prefix)/bin/spotifyd"
+  fi
+  [[ -n "$src" && -x "$src" ]] || return 1
+  mkdir -p "$(dirname "$SPOTIFYD_BIN")"
+  ln -sfn "$src" "$SPOTIFYD_BIN"
+  echo "==> Using system spotifyd at $src"
+  spotifyd_ok
+}
+
+download_spotifyd() {
+  if spotifyd_ok; then
+    return 0
+  fi
+  # Stale/broken previous download — try to satisfy its dylibs first.
+  if [[ -x "$SPOTIFYD_BIN" ]] && ! [[ -L "$SPOTIFYD_BIN" ]]; then
+    if fix_spotifyd_libs; then
+      return 0
+    fi
+    echo "==> replacing unusable spotifyd binary..."
+    rm -f "$SPOTIFYD_BIN"
+  fi
+  if link_system_spotifyd; then
+    return 0
+  fi
+  if fetch_spotifyd_tarball; then
+    if spotifyd_ok || fix_spotifyd_libs; then
+      return 0
+    fi
+    echo "NOTE: downloaded spotifyd would not start"
+  fi
+  if command -v brew >/dev/null 2>&1; then
+    echo "==> brew install spotifyd (fallback)..."
+    if brew install spotifyd >/dev/null; then
+      link_system_spotifyd && return 0
+    fi
+  fi
+  return 1
 }
 
 spotify_login() {
-  if ! command -v librespot >/dev/null 2>&1; then
-    echo "ERROR: librespot not found. Install it first:"
-    echo "  brew install librespot        # macOS"
-    echo "  cargo install librespot       # anywhere with Rust"
+  if ! download_spotifyd; then
+    echo "ERROR: could not install spotifyd."
     exit 1
   fi
-  mkdir -p "$LIBRESPOT_CACHE"
-  librespot_args
-  echo "==> Signing in the built-in Spotify device \"$(librespot_name)\""
-  echo "    A URL will appear below. Open it, approve, and if the final"
-  echo "    redirect fails, paste the whole 127.0.0.1 URL back here."
+  write_spotifyd_conf
+  echo "==> Signing in the built-in Spotify device \"$(spotifyd_name)\""
+  echo "    A browser window will open. Log in, approve, then return here."
   echo
-  librespot "${LIBRESPOT_ARGV[@]}" --enable-oauth
+  "$SPOTIFYD_BIN" authenticate --config-path "$SPOTIFYD_CONF"
+  if ! spotifyd_logged_in; then
+    echo "ERROR: spotifyd login did not write credentials."
+    echo "    Expected: $SPOTIFYD_CACHE/oauth/credentials.json"
+    exit 1
+  fi
+  echo "==> Saved credentials. Next ./start.sh will play through this machine."
 }
 
 ensure_spotify_device() {
@@ -242,26 +405,39 @@ ensure_spotify_device() {
   case "$mode" in
     0|off|no|false) return ;;
   esac
-  if ! command -v librespot >/dev/null 2>&1; then
+  if ! download_spotifyd; then
     if [[ "$mode" != "auto" ]]; then
-      echo "NOTE: librespot not installed — Spotify needs the app open (brew install librespot)"
+      echo "NOTE: spotifyd unavailable — open the Spotify app for playback"
     fi
     return
   fi
-  if [[ ! -f "$LIBRESPOT_CACHE/credentials.json" ]]; then
-    echo "NOTE: built-in Spotify device not signed in yet."
-    echo "      Run once:  ./start.sh --spotify-login"
+  write_spotifyd_conf
+  if ! spotifyd_logged_in; then
+    if [[ "$MODE" != "detach" ]] && [[ -t 0 ]]; then
+      echo "==> First-time Spotify login for the built-in speaker..."
+      if "$SPOTIFYD_BIN" authenticate --config-path "$SPOTIFYD_CONF" && spotifyd_logged_in; then
+        write_spotifyd_conf
+      else
+        echo "NOTE: skipped Spotify login. Run ./start.sh --spotify-login later."
+        echo "      Until then, playback needs the Spotify app open on some device."
+        return
+      fi
+    else
+      echo "NOTE: built-in Spotify device not signed in yet."
+      echo "      Run once:  ./start.sh --spotify-login"
+      return
+    fi
+  fi
+  if pid_alive "spotifyd"; then
+    echo "==> Spotify device \"$(spotifyd_name)\" already running"
     return
   fi
-  if pid_alive "librespot"; then
-    echo "==> Spotify device \"$(librespot_name)\" already running"
-    return
-  fi
-  echo "==> Starting Spotify device \"$(librespot_name)\"..."
-  librespot_args
-  ( exec librespot "${LIBRESPOT_ARGV[@]}" ) >>"$LOG_DIR/librespot.log" 2>&1 &
-  echo $! >"$PID_DIR/librespot.pid"
-  echo "    pid $(cat "$PID_DIR/librespot.pid")  →  logs/librespot.log"
+  echo "==> Starting Spotify device \"$(spotifyd_name)\" (spotifyd)..."
+  (
+    exec "$SPOTIFYD_BIN" --no-daemon --config-path "$SPOTIFYD_CONF"
+  ) >>"$LOG_DIR/spotifyd.log" 2>&1 &
+  echo $! >"$PID_DIR/spotifyd.pid"
+  echo "    pid $(cat "$PID_DIR/spotifyd.pid")  →  logs/spotifyd.log"
 }
 
 ensure_broker() {
@@ -452,6 +628,8 @@ ensure_all_venvs
 ensure_tts_models
 
 if [[ "$MODE" == "setup" ]]; then
+  echo "==> Fetching spotifyd (local Spotify speaker)..."
+  download_spotifyd || echo "NOTE: spotifyd download skipped"
   echo "Setup complete. Venvs are ready under services/*/.venv"
   exit 0
 fi

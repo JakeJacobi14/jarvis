@@ -3,9 +3,9 @@
 Requires Spotify Premium and a one-time OAuth (see spotify_auth.py):
   SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN
 
-The Web API only steers existing Spotify Connect devices, so start.sh runs a
-headless one (librespot) named after JARVIS_SPOTIFY_DEVICE. That device is
-preferred here, which is what lets playback work with no Spotify app open.
+The Web API only steers existing Spotify Connect devices, so start.sh
+downloads spotifyd and runs it as a speaker named after JARVIS_SPOTIFY_DEVICE.
+Preferring that device is what lets playback work with no Spotify app open.
 """
 from __future__ import annotations
 
@@ -115,13 +115,13 @@ def _transfer(device_id: str) -> None:
 def _ensure_device() -> str | None:
     """Return a device id to target, waking the local Jarvis speaker first.
 
-    librespot (started by start.sh) registers a Connect device named after
+    spotifyd (started by start.sh) registers a Connect device named after
     JARVIS_SPOTIFY_DEVICE. Preferring it means music plays on this machine
     without the Spotify app running anywhere.
     """
     devices = list_devices()
     if not devices:
-        # A just-started librespot can take a moment to register.
+        # A just-started spotifyd can take a moment to register.
         for _ in range(2):
             time.sleep(1.0)
             devices = list_devices()

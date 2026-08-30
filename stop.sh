@@ -72,7 +72,7 @@ for name in "${SERVICES[@]}"; do
   i=$((i + 1))
 done
 
-for extra in ollama librespot; do
+for extra in ollama spotifyd librespot; do
   if [[ -f "$PID_DIR/$extra.pid" ]]; then
     pid="$(cat "$PID_DIR/$extra.pid")"
     if ! kill_pid "$pid" "$extra"; then

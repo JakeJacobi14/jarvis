@@ -17,7 +17,7 @@ Local voice assistant pipeline over MQTT: wake word → STT → LLM brain → TT
 - ✅ Phone control panel + talking avatar (PWA on the LAN)
 - ✅ Dashcam clips — *"Jarvis, clip that"* saves the last 30s of camera + mic
 - ✅ Live transcript on the phone panel + hold-to-speak from another room
-- ✅ Built-in Spotify Connect speaker (librespot), so no Spotify app has to be open
+- ✅ Built-in Spotify Connect speaker (spotifyd), so no Spotify app has to be open
 
 ## Requirements
 
@@ -29,8 +29,8 @@ Local voice assistant pipeline over MQTT: wake word → STT → LLM brain → TT
 - **Tavily API key** (web search commands) — [app.tavily.com](https://app.tavily.com/home)
 - **Python 3.10+**, mic + speakers
 - **ffmpeg** — required for `clip that`, also used for camera stills
-- Optional: **librespot** (`brew install librespot`) so Spotify plays with no app open
 - Optional: a **WLED** strip or Home Assistant for lights
+- Spotify speaker: **spotifyd** is downloaded automatically by `./start.sh` / `Jarvis.command`
 ## Config
 
 ```bash
@@ -50,7 +50,7 @@ cp .env.example .env
 | `SPOTIFY_CLIENT_ID` | — | Spotify developer app |
 | `SPOTIFY_CLIENT_SECRET` | — | Spotify developer app |
 | `SPOTIFY_REFRESH_TOKEN` | — | from `spotify_auth.py` |
-| `JARVIS_SPOTIFY_LOCAL_DEVICE` | `auto` | run librespot as a local Connect speaker |
+| `JARVIS_SPOTIFY_LOCAL_DEVICE` | `auto` | run spotifyd as a local Connect speaker |
 | `JARVIS_SPOTIFY_DEVICE` | `Jarvis` | Connect device name to prefer |
 | `JARVIS_TTS_PROVIDER` | `cartesia` | `cartesia` or `kokoro` |
 | `CARTESIA_API_KEY` | — | required for Cartesia TTS |
@@ -95,9 +95,10 @@ After Jarvis answers, follow-up speech is answered without requiring the wake wo
 ### Spotify (no app needed)
 
 Playback goes through the **Spotify Web API**, which can only steer an existing
-Spotify Connect device. So Jarvis runs his own headless one
-([librespot](https://github.com/librespot-org/librespot)) and prefers it — that
-is what lets music start with no Spotify app open anywhere.
+Spotify Connect device. `./start.sh` and **Jarvis.command** download
+[spotifyd](https://github.com/Spotifyd/spotifyd) into `services/spotify/bin/`
+on first run and start it as a speaker named `JARVIS_SPOTIFY_DEVICE`. That is
+what lets music start with no Spotify app open anywhere.
 
 Two one-time steps, both requiring Premium:
 
@@ -108,12 +109,14 @@ Two one-time steps, both requiring Premium:
 #    Put SPOTIFY_CLIENT_ID + SPOTIFY_CLIENT_SECRET in .env, then:
 cd services/brain && .venv/bin/python spotify_auth.py
 
-# 2. The local speaker itself
-brew install librespot          # or: cargo install librespot
-./start.sh --spotify-login      # opens a URL; approve once, credentials cache
+# 2. The local speaker itself (browser login, once)
+./start.sh --spotify-login
 ```
 
-After that `./start.sh` brings the device up automatically and *play Bohemian
+Double-clicking **Jarvis.command** (or a normal `./start.sh`) will also prompt
+for that speaker login the first time, as long as you're at a terminal.
+
+After that every start brings the device up automatically and *play Bohemian
 Rhapsody* plays through this machine's speakers. Credentials cache in
 `services/spotify/cache/`, so the login is genuinely once.
 

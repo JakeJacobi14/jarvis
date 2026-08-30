@@ -18,8 +18,10 @@ services/clipper/.clipbuf/
 # Self-signed cert for the phone panel
 services/control/certs/
 
-# Spotify Connect device credentials
+# Spotify Connect device (spotifyd binary + credentials + generated config)
+services/spotify/bin/
 services/spotify/cache/
+services/spotify/spotifyd.conf
 
 # macOS
 .DS_Store
