@@ -1,6 +1,5 @@
 from datetime import datetime
 from openwakeword.model import Model
-import openwakeword
 import sounddevice as sd
 import numpy as np
 import paho.mqtt.client as mqtt
@@ -40,8 +39,7 @@ def resolve_mic_device():
         return hits[0]
 
 
-_hey = openwakeword.models["hey_jarvis"]["model_path"]
-model = Model(wakeword_model_paths=[_hey])
+model = Model(wakeword_models=["hey_jarvis"])
 
 mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 mqtt_client.connect("localhost", 1883, keepalive=30)
