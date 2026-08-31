@@ -97,12 +97,16 @@ def chunk_loudness(chunk) -> float:
 
 
 def publish_text(full_text: str, *, elapsed: float, source: str = "wake"):
+    global _arm_followup
     if not is_real_utterance(full_text):
         ts(f"ignored non-speech in {elapsed:.2f}s: {full_text!r}")
         return
     topic = "jarvis/stt/followup" if source == "followup" else "jarvis/stt/text"
     ts(f"done in {elapsed:.2f}s [{source}] → {full_text!r}")
     mqtt_client.publish(topic, full_text)
+    # After he answers a wake (or PTT) turn, listen once more. Follow-ups
+    # themselves must not re-arm or TV/echo would loop STT+LLM+TTS forever.
+    _arm_followup = source != "followup"
 
 
 mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -180,6 +184,7 @@ else:
 # ── whisper helpers ──────────────────────────────────────────────────
 is_space_pressed = False
 _wake_busy = False
+_arm_followup = False  # one listen-again after a wake turn; never chain
 _ptt_stop = None  # threading.Event for cartesia PTT
 
 
@@ -407,7 +412,7 @@ def on_release(key):
 
 
 def on_mqtt_message(client, userdata, msg):
-    global _wake_busy
+    global _wake_busy, _arm_followup
     topic = msg.topic
     payload = msg.payload.decode()
 
@@ -415,6 +420,10 @@ def on_mqtt_message(client, userdata, msg):
         return
     if topic == "jarvis/tts/response" and payload != "done":
         return
+    if topic == "jarvis/tts/response":
+        if not _arm_followup:
+            return
+        _arm_followup = False
     if _wake_busy:
         return
     if PROVIDER == "whisper" and recorder._recording:

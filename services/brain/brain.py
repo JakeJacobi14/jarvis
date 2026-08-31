@@ -228,7 +228,13 @@ def _handle_search(user_text: str, query: str, *, t0: float) -> str:
     facts = tavily_client.format_for_llm(data)
     ts(f"search ok in {time.perf_counter() - t0:.2f}s ({len(facts)} chars)")
 
-    # Ephemeral messages: don't pollute long-term memory with raw search dumps.
+    # Prefer Tavily's own sentence so gpt-oss is not billed for a rewrite.
+    spoken = _tavily_spoken_fallback(data)
+    if spoken:
+        ts("search → Tavily answer (skipping LLM)")
+        return _speak_direct(spoken, t0=t0)
+
+    # Snippets only — one short Groq pass, no chat history.
     summarize = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {

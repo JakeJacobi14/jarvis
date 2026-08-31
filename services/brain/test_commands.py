@@ -67,7 +67,13 @@ def test_volume():
     assert r is not None and r.label == "volume" and r.run
     r = match_command("turn up sonos by 10%")
     assert r is not None and r.label == "volume" and r.run
-    r = match_command("turn up sonos speakers")
+    r = match_command("turn the volume up 50%")
+    assert r is not None and r.label == "volume" and r.run
+    r = match_command("turn the volume up")
+    assert r is not None and r.label == "volume" and r.run
+    r = match_command("turn up the volume 50 percent")
+    assert r is not None and r.label == "volume" and r.run
+    r = match_command("turn the volume up to 50%")
     assert r is not None and r.label == "volume" and r.run
 
 

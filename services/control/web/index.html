@@ -333,8 +333,13 @@
       }
     }
 
+    function jarvisBusy() {
+      return document.body.classList.contains("is-speaking")
+        || document.body.classList.contains("is-thinking");
+    }
+
     function startCapture() {
-      if (!listening || capturing || sending || !micStream) return;
+      if (!listening || capturing || sending || !micStream || jarvisBusy()) return;
       const mimeType = pickMime();
       const gen = listenGen;
       chunks = [];
@@ -396,6 +401,10 @@
 
     function vadTick(analyser, gen) {
       if (!listening || gen !== listenGen) return;
+      if (jarvisBusy()) {
+        if (capturing) stopCapture({ discard: true });
+        return;
+      }
       const level = rmsFromAnalyser(analyser);
       const now = Date.now();
       const SPEECH = 0.045;
