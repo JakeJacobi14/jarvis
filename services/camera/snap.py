@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Take one still from the default camera. No third-party imports required.
 
-Tries, in order: imagesnap (macOS), fswebcam (Linux), ffmpeg, the clipper's
-rolling buffer (when it already holds the camera), then OpenCV if it happens
-to be installed.
+Tries, in order: the clipper's rolling buffer (when it already holds the
+camera), imagesnap (macOS), fswebcam (Linux), ffmpeg, then OpenCV if it
+happens to be installed.
 """
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 
@@ -38,6 +39,34 @@ def _run(argv: list[str]) -> bool:
     return proc.returncode == 0
 
 
+_MONTHS = (
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+)
+
+
+def dated_stamp() -> str:
+    """Aug-30-2026-9-43pm — same scheme as clips."""
+    when = datetime.now()
+    hour = when.hour % 12 or 12
+    ampm = "am" if when.hour < 12 else "pm"
+    return (
+        f"{_MONTHS[when.month - 1]}-{when.day}-{when.year}-"
+        f"{hour}-{when.minute:02d}{ampm}"
+    )
+
+
+def unique_media_path(folder: Path, prefix: str, ext: str) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = f"{prefix}-{dated_stamp()}"
+    dest = folder / f"{stem}.{ext}"
+    n = 2
+    while dest.exists():
+        dest = folder / f"{stem}-{n}.{ext}"
+        n += 1
+    return dest
+
+
 CLIP_BUFFER = Path(__file__).resolve().parents[1] / "clipper" / ".clipbuf"
 
 
@@ -49,8 +78,8 @@ def _live_buffer_segment() -> Path | None:
     if len(segments) < 2:
         return None
     try:
-        # The in-progress segment proves the recorder is alive right now.
-        if time.time() - segments[-1].stat().st_mtime > 15:
+        # Stale leftovers from a dead ffmpeg must not count as "live".
+        if time.time() - segments[-1].stat().st_mtime > 4:
             return None
     except OSError:
         return None

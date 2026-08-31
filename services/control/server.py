@@ -35,8 +35,6 @@ import paho.mqtt.client as mqtt
 ROOT = Path(__file__).resolve().parents[2]
 WEB = Path(__file__).resolve().parent / "web"
 CERT_DIR = Path(__file__).resolve().parent / "certs"
-CAPTURES = ROOT / "captures"
-CLIPS = ROOT / "clips"
 PID_DIR = ROOT / ".pids"
 SNAP_SCRIPT = ROOT / "services" / "camera" / "snap.py"
 START_SH = ROOT / "start.sh"
@@ -58,6 +56,9 @@ def _load_dotenv():
 
 
 _load_dotenv()
+
+PHOTOS = Path(os.environ.get("JARVIS_PHOTOS_DIR") or ROOT / "Photos")
+CLIPS = Path(os.environ.get("JARVIS_CLIPS_DIR") or ROOT / "Clips")
 
 
 def _flag(name: str, default: bool = False) -> bool:
@@ -219,12 +220,15 @@ def stack_status() -> dict:
 
 
 def latest_snap() -> str | None:
-    if not CAPTURES.is_dir():
+    if not PHOTOS.is_dir():
         return None
-    shots = sorted(CAPTURES.glob("snap-*.jpg"), key=lambda p: p.stat().st_mtime)
+    shots = sorted(
+        (p for p in PHOTOS.glob("*.jpg") if p.is_file()),
+        key=lambda p: p.stat().st_mtime,
+    )
     if not shots:
         return None
-    return f"/captures/{shots[-1].name}"
+    return f"/photos/{shots[-1].name}"
 
 
 def list_clips(limit: int = 12) -> list[dict]:
@@ -279,9 +283,10 @@ def run_stack(action: str) -> tuple[bool, str]:
 
 
 def take_snap() -> tuple[bool, str, str | None]:
-    CAPTURES.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    dest = CAPTURES / f"snap-{stamp}.jpg"
+    sys.path.insert(0, str(SNAP_SCRIPT.parent))
+    from snap import unique_media_path  # type: ignore
+
+    dest = unique_media_path(PHOTOS, "photo", "jpg")
     try:
         proc = subprocess.run(
             [sys.executable, str(SNAP_SCRIPT), str(dest)],
@@ -295,7 +300,7 @@ def take_snap() -> tuple[bool, str, str | None]:
     if proc.returncode != 0 or not dest.is_file():
         err = (proc.stderr or proc.stdout or "camera failed").strip()
         return False, err, None
-    return True, "Photo saved.", f"/captures/{dest.name}"
+    return True, "Photo saved.", f"/photos/{dest.name}"
 
 
 def request_clip(seconds: int | None = None) -> tuple[bool, str, dict | None]:
@@ -593,7 +598,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return
             self._send(404, b"not found", "text/plain")
             return
-        if path.startswith("/captures/"):
+        if path.startswith("/photos/") or path.startswith("/captures/"):
             if not self._pin_ok():
                 self._json(401, {"ok": False, "error": "pin"})
                 return
@@ -601,7 +606,7 @@ class Handler(SimpleHTTPRequestHandler):
             if not name.endswith(".jpg") or not _SAFE_NAME.match(name):
                 self._send(400, b"bad path", "text/plain")
                 return
-            self._file(CAPTURES / name, "image/jpeg")
+            self._file(PHOTOS / name, "image/jpeg")
             return
         if path.startswith("/clips/"):
             if not self._pin_ok():
@@ -937,6 +942,7 @@ def mqtt_loop():
 def main() -> int:
     WEB.mkdir(parents=True, exist_ok=True)
     (WEB / "character").mkdir(parents=True, exist_ok=True)
+    PHOTOS.mkdir(parents=True, exist_ok=True)
     CLIPS.mkdir(parents=True, exist_ok=True)
     threading.Thread(target=mqtt_loop, daemon=True).start()
 

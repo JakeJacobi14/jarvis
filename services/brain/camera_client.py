@@ -5,14 +5,15 @@ import base64
 import os
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import requests
 
 ROOT = Path(__file__).resolve().parents[2]
 SNAP_SCRIPT = ROOT / "services" / "camera" / "snap.py"
-CAPTURE_DIR = ROOT / "captures"
+CAPTURE_DIR = Path(os.environ.get("JARVIS_PHOTOS_DIR") or ROOT / "Photos")
+sys.path.insert(0, str(SNAP_SCRIPT.parent))
+from snap import unique_media_path  # noqa: E402
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -22,9 +23,7 @@ class CameraError(RuntimeError):
 
 
 def capture_path() -> Path:
-    CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    dest = CAPTURE_DIR / f"snap-{stamp}.jpg"
+    dest = unique_media_path(CAPTURE_DIR, "photo", "jpg")
     env = os.environ.copy()
     try:
         proc = subprocess.run(

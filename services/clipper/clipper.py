@@ -4,7 +4,7 @@
 ffmpeg records the camera + mic continuously into short segments under
 `.clipbuf/`, keeping only the most recent JARVIS_CLIP_MAX_SECONDS of footage.
 When "clip that" arrives on `jarvis/clip/save`, the newest segments are
-concatenated and trimmed to the requested tail length into `clips/`.
+concatenated and trimmed to the requested tail length into `Clips/`.
 
 Everything is stream-copied at save time, so a clip lands in well under a
 second and nothing interrupts the recording.
@@ -26,7 +26,6 @@ import paho.mqtt.client as mqtt
 
 ROOT = Path(__file__).resolve().parents[2]
 BUFFER_DIR = Path(__file__).resolve().parent / ".clipbuf"
-CLIPS_DIR = ROOT / "clips"
 SEGMENT_GLOB = "seg-*.mp4"
 
 
@@ -72,6 +71,7 @@ VIDEO_BITRATE = os.environ.get("JARVIS_CLIP_VIDEO_BITRATE", "2500k").strip() or 
 VIDEO_SIZE = os.environ.get("JARVIS_CLIP_VIDEO_SIZE", "").strip()
 MAX_WIDTH = _env_int("JARVIS_CLIP_MAX_WIDTH", 1280)
 WITH_AUDIO = _env_flag("JARVIS_CLIP_AUDIO", True)
+CLIPS_DIR = Path(os.environ.get("JARVIS_CLIPS_DIR") or ROOT / "Clips")
 
 # Keep a little more than the longest clip anyone can ask for.
 KEEP_SEGMENTS = math.ceil(MAX_SECONDS / SEGMENT_SECONDS) + 3
@@ -118,7 +118,16 @@ def _input_args(*, size: str, fps: int, audio: bool) -> list[str]:
     """Capture-device flags for this platform, most→least constrained."""
     video = _camera_device()
     if sys.platform == "darwin":
-        args = ["-f", "avfoundation"]
+        # Wall-clock PTS stop avfoundation's fake 1e6-fps timebase from
+        # making the segment muxer stall or duplicate 100k frames and die.
+        args = [
+            "-f", "avfoundation",
+            "-pixel_format", "nv12",
+            "-probesize", "32M",
+            "-fflags", "+genpts",
+            "-use_wallclock_as_timestamps", "1",
+            "-thread_queue_size", "512",
+        ]
         if fps:
             args += ["-framerate", str(fps)]
         if size:
@@ -163,8 +172,8 @@ def _encode_args(*, audio: bool) -> list[str]:
         "-r", str(rate),
         *video,
         "-pix_fmt", "yuv420p",
-        # 1s keyframe interval so tail-trimming lands close to the request.
         "-g", str(rate),
+        "-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_SECONDS})",
     ]
     if audio:
         args += ["-c:a", "aac", "-b:a", "96k", "-ar", "44100", "-ac", "1"]
@@ -177,6 +186,7 @@ def _segment_args() -> list[str]:
         "-segment_time", str(SEGMENT_SECONDS),
         "-segment_format", "mp4",
         "-reset_timestamps", "1",
+        "-break_non_keyframes", "1",
         str(BUFFER_DIR / "seg-%05d.mp4"),
     ]
 
@@ -234,8 +244,30 @@ class Recorder:
             cwd=str(ROOT),
         )
 
+    def _clear_buffer(self) -> None:
+        for leftover in BUFFER_DIR.glob(SEGMENT_GLOB):
+            leftover.unlink(missing_ok=True)
+
+    def _ffmpeg_tail(self, lines: int = 12) -> str:
+        try:
+            text = self._log.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        tail = [ln for ln in text.splitlines() if ln.strip()][-lines:]
+        return " | ".join(tail)[:400]
+
+    def _new_segments(self, since: float) -> list[Path]:
+        out = []
+        for path in BUFFER_DIR.glob(SEGMENT_GLOB):
+            try:
+                if path.stat().st_mtime >= since:
+                    out.append(path)
+            except OSError:
+                continue
+        return out
+
     def start(self) -> bool:
-        """Try capture configs until one actually produces closed segments."""
+        """Try capture configs until this ffmpeg actually rotates segments."""
         for size, fps, audio in _attempts():
             label = (
                 f"size={size or 'device default'} "
@@ -243,19 +275,24 @@ class Recorder:
                 f"audio={'on' if audio else 'off'}"
             )
             ts(f"starting recorder ({label})")
+            self._clear_buffer()
             try:
                 proc = self._spawn(size, fps, audio)
             except RuntimeError as e:
                 ts(str(e))
                 return False
-            # A second segment file proves the muxer is really rotating; the
-            # first one exists immediately and stays open, so it proves nothing.
-            deadline = time.monotonic() + SEGMENT_SECONDS * 2 + 8
+            spawned = time.time()
+            # Two files created after THIS spawn — leftovers from a dead run
+            # used to make us think we were recording while ffmpeg had already
+            # exited, which is why it "died" every 2 seconds.
+            deadline = time.monotonic() + SEGMENT_SECONDS * 3 + 10
             healthy = False
             while time.monotonic() < deadline:
-                if proc.poll() is not None:
+                code = proc.poll()
+                if code is not None:
+                    ts(f"ffmpeg exited {code} — {self._ffmpeg_tail() or 'see logs/clipper-ffmpeg.log'}")
                     break
-                if len(list(BUFFER_DIR.glob(SEGMENT_GLOB))) >= 2:
+                if len(self._new_segments(spawned - 0.2)) >= 2:
                     healthy = True
                     break
                 time.sleep(0.2)
@@ -265,16 +302,13 @@ class Recorder:
                 ts(f"recording ({label}) → {BUFFER_DIR.name}/")
                 return True
             if proc.poll() is None:
-                ts(f"config produced no segments — see logs/clipper-ffmpeg.log")
+                ts("config produced no new segments — see logs/clipper-ffmpeg.log")
                 proc.terminate()
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-            else:
-                ts(f"config failed (exit {proc.returncode}) — see logs/clipper-ffmpeg.log")
-            for leftover in BUFFER_DIR.glob(SEGMENT_GLOB):
-                leftover.unlink(missing_ok=True)
+            self._clear_buffer()
         return False
 
     def alive(self) -> bool:
@@ -295,9 +329,15 @@ class Recorder:
             if self._stop.is_set():
                 break
             if not self.alive():
-                ts("recorder died — restarting in 5s")
+                code = None if self.proc is None else self.proc.poll()
+                ts(
+                    f"recorder died (exit {code}) — "
+                    f"{self._ffmpeg_tail() or 'see logs/clipper-ffmpeg.log'}; restarting in 5s"
+                )
                 publish_status("idle")
                 time.sleep(5)
+                if self._stop.is_set():
+                    break
                 if self.start():
                     publish_status("recording")
 

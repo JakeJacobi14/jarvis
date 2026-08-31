@@ -196,7 +196,7 @@ ensure_clipper() {
   fi
   ensure_venv "clipper"
   start_service_bg "clipper" "clipper" "clipper.py"
-  echo "    rolling ${JARVIS_CLIP_MAX_SECONDS:-90}s A/V buffer → clips/ on \"clip that\""
+  echo "    rolling ${JARVIS_CLIP_MAX_SECONDS:-90}s A/V buffer → Clips/ on \"clip that\""
 }
 
 # ── headless Spotify Connect device (spotifyd) ──────────────────────

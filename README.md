@@ -83,7 +83,7 @@ Extensible registry in `services/brain/commands/`. First match wins.
 | `pause` / `resume` / `skip` / `next` / `previous` | Spotify playback control |
 | `turn on/off the lights` / `lights red` / `rainbow` | WLED strip or Home Assistant light |
 | `take a picture` / `what do you see` | one still from the camera; Groq vision describes it when asked |
-| `clip that` / `clip the last 45 seconds` | saves the last stretch of camera + mic to `clips/` |
+| `clip that` / `clip the last 45 seconds` | saves the last stretch of camera + mic to `Clips/` |
 | `set a timer for 5 minutes` / `remind me in 30 seconds` | speaks when it fires (brain must stay running) |
 | `volume up/down` / `set volume to 40` / `mute` | macOS or Linux (pactl/wpctl) speaker volume |
 | `what can you do` / `help` | short capability list |
@@ -146,7 +146,7 @@ incoming connections the first time.
 ### Dashcam clips
 
 Say *clip that* and the last 30 seconds of camera + microphone are written to
-`clips/` named by date and time (`clip-Aug-30-2026-9-43pm.mp4`). Also *clip the last 10 seconds*, *clip the last minute*, or the
+`Clips/` named by date and time (`clip-Aug-30-2026-9-43pm.mp4`). Also *clip the last 10 seconds*, *clip the last minute*, or the
 **Clip 30s** button on the phone panel.
 
 To make that possible a `clipper` service records continuously into a rolling
@@ -173,7 +173,7 @@ A **[WLED](https://kno.wled.ge/)** strip uses `WLED_HOST` and wins if both are s
 
 ### Camera
 
-Say *take a picture* or *what do you see*. Needs `ffmpeg` (or `imagesnap` on macOS / `fswebcam` on Linux). Stills land in `captures/`. *What do you see* also sends the frame to Groq vision (`GROQ_VISION_MODEL`).
+Say *take a picture* or *what do you see*. Needs `ffmpeg` (or `imagesnap` on macOS / `fswebcam` on Linux). Stills land in `Photos/`. *What do you see* also sends the frame to Groq vision (`GROQ_VISION_MODEL`).
 
 ### Phone panel + avatar (headless PC)
 

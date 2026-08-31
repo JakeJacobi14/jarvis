@@ -10,9 +10,11 @@
 
 # Camera snapshots
 captures/
+Photos/
 
 # Dashcam clips + rolling buffer
 clips/
+Clips/
 services/clipper/.clipbuf/
 
 # Self-signed cert for the phone panel
