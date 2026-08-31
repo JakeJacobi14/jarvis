@@ -146,7 +146,7 @@ incoming connections the first time.
 ### Dashcam clips
 
 Say *clip that* and the last 30 seconds of camera + microphone are written to
-`clips/`. Also *clip the last 10 seconds*, *clip the last minute*, or the
+`clips/` named by date and time (`clip-Aug-30-2026-9-43pm.mp4`). Also *clip the last 10 seconds*, *clip the last minute*, or the
 **Clip 30s** button on the phone panel.
 
 To make that possible a `clipper` service records continuously into a rolling

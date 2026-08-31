@@ -163,7 +163,7 @@
       if (!list || !list.length) { $("clips").innerHTML = ""; return; }
       $("clips").innerHTML = list.map((c) =>
         `<a class="clip-row" href="${c.url}" target="_blank" rel="noopener">
-           <span>${escapeHtml(c.name.replace(/^clip-/, ""))}</span>
+           <span>${escapeHtml(c.name.replace(/^clip-/, "").replace(/\.mp4$/i, ""))}</span>
            <span class="muted">${c.when} · ${c.size_mb} MB</span>
          </a>`).join("");
     }
@@ -268,7 +268,9 @@
       && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)
       && typeof MediaRecorder !== "undefined";
     let micRelay = true;
+    let listenGen = 0;
     let listening = false;
+    let starting = false;
     let capturing = false;
     let recorder = null;
     let micStream = null;
@@ -318,13 +320,27 @@
       return Math.sqrt(sum / buf.length);
     }
 
+    function releaseMic() {
+      if (audioCtx) {
+        try { audioCtx.close(); } catch (_) {}
+        audioCtx = null;
+      }
+      if (micStream) {
+        micStream.getTracks().forEach((t) => {
+          try { t.enabled = false; t.stop(); } catch (_) {}
+        });
+        micStream = null;
+      }
+    }
+
     function startCapture() {
-      if (capturing || sending || !micStream) return;
+      if (!listening || capturing || sending || !micStream) return;
       const mimeType = pickMime();
+      const gen = listenGen;
       chunks = [];
       recorder = new MediaRecorder(micStream, mimeType ? { mimeType } : undefined);
       recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-      recorder.onstop = () => { uploadUtterance(); };
+      recorder.onstop = () => { uploadUtterance(gen); };
       recorder.start();
       capturing = true;
       heardSpeech = true;
@@ -333,18 +349,28 @@
       talkBtn.classList.add("recording");
     }
 
-    function stopCapture() {
-      if (!capturing) return;
+    function stopCapture(opts) {
+      const discard = !!(opts && opts.discard);
+      if (!capturing && !recorder) return;
       capturing = false;
       talkBtn.classList.remove("recording");
-      if (recorder && recorder.state !== "inactive") recorder.stop();
-      else recorder = null;
+      if (!recorder) return;
+      if (discard) {
+        recorder.ondataavailable = null;
+        recorder.onstop = null;
+        chunks = [];
+      }
+      try {
+        if (recorder.state !== "inactive") recorder.stop();
+      } catch (_) {}
+      if (discard) recorder = null;
     }
 
-    async function uploadUtterance() {
+    async function uploadUtterance(gen) {
       const type = (recorder && recorder.mimeType) || "audio/webm";
       const blob = new Blob(chunks, { type });
       recorder = null;
+      if (gen !== listenGen || !listening) return;
       const dur = Date.now() - speechStartedAt;
       if (blob.size < 1500 || dur < 350) return;
       sending = true;
@@ -355,16 +381,21 @@
           headers: { "Content-Type": type },
           body: blob,
         });
-        talkMsg.textContent = data.text ? `Heard: "${data.text}"` : (data.message || "Nothing heard.");
+        if (gen !== listenGen) return;
+        talkMsg.textContent = data.text
+          ? `Heard: "${data.text}" — answering out loud.`
+          : (data.message || "Nothing heard.");
       } catch (e) {
+        if (gen !== listenGen) return;
+        if (e && e.name === "AbortError") return;
         talkMsg.textContent = e.message;
       } finally {
         sending = false;
       }
     }
 
-    function vadTick(analyser) {
-      if (!listening) return;
+    function vadTick(analyser, gen) {
+      if (!listening || gen !== listenGen) return;
       const level = rmsFromAnalyser(analyser);
       const now = Date.now();
       const SPEECH = 0.045;
@@ -381,13 +412,17 @@
     }
 
     async function startAlwaysListen() {
-      if (listening || !canRecord) return;
+      if (listening || starting || !canRecord) return;
       if (!micRelay) {
         talkMsg.textContent = "No transcription key set on the Jarvis box.";
         return;
       }
+      starting = true;
+      const gen = ++listenGen;
+      talkBtn.textContent = "Starting mic…";
+      let stream;
       try {
-        micStream = await navigator.mediaDevices.getUserMedia({
+        stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
@@ -396,31 +431,48 @@
           },
         });
       } catch (e) {
-        talkMsg.textContent = "Microphone blocked. Allow access and tap again.";
+        if (gen === listenGen) {
+          starting = false;
+          talkBtn.textContent = "Tap to listen here";
+          talkMsg.textContent = "Microphone blocked. Allow access and tap again.";
+        }
         return;
       }
+      if (gen !== listenGen) {
+        stream.getTracks().forEach((t) => { try { t.stop(); } catch (_) {} });
+        return;
+      }
+      micStream = stream;
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       if (audioCtx.state === "suspended") await audioCtx.resume();
+      if (gen !== listenGen) {
+        releaseMic();
+        starting = false;
+        return;
+      }
       const src = audioCtx.createMediaStreamSource(micStream);
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 2048;
       src.connect(analyser);
       listening = true;
+      starting = false;
       talkBtn.classList.add("listening");
       talkBtn.textContent = "Listening here — tap to pause";
-      talkMsg.textContent = "Room mic is still on. Speak normally.";
-      vadTimer = setInterval(() => vadTick(analyser), 50);
+      talkMsg.textContent = "He still talks out loud. This page just shows the transcript.";
+      vadTimer = setInterval(() => vadTick(analyser, gen), 50);
     }
 
     function stopAlwaysListen() {
+      listenGen += 1;
+      starting = false;
       listening = false;
       clearInterval(vadTimer);
       vadTimer = null;
-      stopCapture();
+      stopCapture({ discard: true });
       talkBtn.classList.remove("listening", "recording");
       talkBtn.textContent = "Tap to listen here";
-      if (audioCtx) { try { audioCtx.close(); } catch (_) {} audioCtx = null; }
-      if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
+      talkMsg.textContent = "Paused — this device's mic is off.";
+      releaseMic();
     }
 
     const onJarvisBox = location.hostname === "localhost" || location.hostname === "127.0.0.1";
@@ -429,9 +481,13 @@
       talkMsg.textContent = "Room mic is already always on. Use this on your phone.";
     }
 
+    let clickLockUntil = 0;
     talkBtn.addEventListener("click", () => {
       if (!canRecord) return;
-      if (listening) {
+      const now = Date.now();
+      if (now < clickLockUntil) return;
+      if (listening || starting) {
+        clickLockUntil = now + 500;
         try { localStorage.setItem(LISTEN_KEY, "0"); } catch (_) {}
         stopAlwaysListen();
       } else {
@@ -450,15 +506,15 @@
 
     async function maybeAutostart() {
       if (!canRecord || onJarvisBox) return;
-      let want = true;
-      try { want = localStorage.getItem(LISTEN_KEY) !== "0"; } catch (_) {}
+      let want = false;
+      try { want = localStorage.getItem(LISTEN_KEY) === "1"; } catch (_) {}
       if (!want) return;
       let granted = false;
       try {
         const st = await navigator.permissions.query({ name: "microphone" });
         granted = st.state === "granted";
       } catch (_) {
-        try { granted = localStorage.getItem(LISTEN_KEY) === "1"; } catch (__) {}
+        granted = true;
       }
       if (granted) startAlwaysListen();
     }

@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -363,6 +362,36 @@ def _wait_for_segment_close(timeout: float) -> None:
         time.sleep(0.1)
 
 
+_MONTHS = (
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+)
+
+
+def _clip_stamp(when: datetime | None = None) -> str:
+    """Aug-30-2026-9-43pm — readable date/time, safe for filenames."""
+    when = when or datetime.now()
+    hour = when.hour % 12 or 12
+    ampm = "am" if when.hour < 12 else "pm"
+    return (
+        f"{_MONTHS[when.month - 1]}-{when.day}-{when.year}-"
+        f"{hour}-{when.minute:02d}{ampm}"
+    )
+
+
+def _clip_dest(when: datetime | None = None) -> Path:
+    stamp = _clip_stamp(when)
+    dest = CLIPS_DIR / f"clip-{stamp}.mp4"
+    if not dest.exists():
+        return dest
+    n = 2
+    while True:
+        dest = CLIPS_DIR / f"clip-{stamp}-{n}.mp4"
+        if not dest.exists():
+            return dest
+        n += 1
+
+
 def build_clip(seconds: float, label: str | None = None) -> tuple[Path, float]:
     """Save the last `seconds` of footage. Returns (path, actual duration).
 
@@ -382,11 +411,8 @@ def build_clip(seconds: float, label: str | None = None) -> tuple[Path, float]:
     chosen = complete[-want:]
 
     CLIPS_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    # The label arrives over MQTT, so it must not be able to steer the path.
-    tag = re.sub(r"[^A-Za-z0-9_-]", "", label or "")[:40]
-    suffix = f"-{tag}" if tag else ""
-    dest = CLIPS_DIR / f"clip-{stamp}{suffix}.mp4"
+    dest = _clip_dest()
+    stamp = dest.stem
     scratch = CLIPS_DIR / f".joining-{stamp}.mp4"
     listing = CLIPS_DIR / f".joining-{stamp}.txt"
 
