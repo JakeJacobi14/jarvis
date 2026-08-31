@@ -13,7 +13,7 @@ Local voice assistant pipeline over MQTT: wake word → STT → LLM brain → TT
 - ✅ Step 7: End-of-speech — Ink-2 turn detection (Whisper path keeps local energy VAD)
 - ✅ Conversation memory + listen-again after TTS
 - ✅ Brain command system + Tavily web search (`google …` / `search …` / live-fact detect)
-- ✅ Weather (Open-Meteo), lights (WLED / Home Assistant), camera snap, timers, volume
+- ✅ Weather (Open-Meteo), lights (Feit/Tuya, WLED, Home Assistant), camera snap, timers, volume
 - ✅ Phone control panel + talking avatar (PWA on the LAN)
 - ✅ Dashcam clips — *"Jarvis, clip that"* saves the last 30s of camera + mic
 - ✅ Live transcript on the phone panel + always-listen from a phone or laptop mic
@@ -29,7 +29,7 @@ Local voice assistant pipeline over MQTT: wake word → STT → LLM brain → TT
 - **Tavily API key** (web search commands) — [app.tavily.com](https://app.tavily.com/home)
 - **Python 3.10+**, mic + speakers
 - **ffmpeg** — required for `clip that`, also used for camera stills
-- Optional: a **WLED** strip or Home Assistant for lights
+- Optional: **Feit / Tuya WiFi bulbs**, a **WLED** strip, or Home Assistant for lights
 - Spotify speaker: **spotifyd** is downloaded automatically by `./start.sh` / `Jarvis.command`
 ## Config
 
@@ -161,9 +161,15 @@ buffer instead of fighting for the device.
 
 ### Lights / RGB strips
 
-Cheapest path for a strip is **[WLED](https://kno.wled.ge/)** on an ESP32/ESP8266. Put its LAN IP in `WLED_HOST`. Then: *turn on the lights*, *lights blue*, *make the lights rainbow*, *dim the lights*.
+**Feit WiFi A19** (and other Tuya bulbs): pair them on **2.4 GHz** in the Smart Life app, create a project at [iot.tuya.com](https://iot.tuya.com), put `TUYA_API_KEY` / `TUYA_API_SECRET` in `.env`, then:
 
-Philips Hue, Ikea, Tuya, etc. go through **Home Assistant**: set `HA_URL`, `HA_TOKEN`, and `HA_LIGHT_ENTITY`. WLED wins if both are set (better for color/effects).
+```bash
+services/brain/.venv/bin/python services/brain/tuya_setup.py wizard
+```
+
+That writes `tuya/devices.json`. Restart the brain. Then: *turn on the lights*, *make the lights warmer*, *daylight*, *dim the lights*.
+
+A **[WLED](https://kno.wled.ge/)** strip uses `WLED_HOST` and wins if both are set. Philips Hue / Ikea can still go through **Home Assistant** (`HA_URL`, `HA_TOKEN`, `HA_LIGHT_ENTITY`).
 
 ### Camera
 

@@ -7,7 +7,7 @@ import volume_client
 from commands.base import Command, CommandResult
 
 _PREFIX = r"^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?"
-_WHERE = r"(?:\s+(?:on|of|for)\s+(?:the\s+)?(?:sonos\s+)?(?:speakers?|amp|sonos))?"
+_WHERE = r"(?:\s+(?:on|of|for)?\s*(?:the\s+)?(?:sonos\s+)?(?:speakers?|amp|sonos))?"
 
 _UP = re.compile(
     rf"""
@@ -48,7 +48,6 @@ _UNMUTE = re.compile(
 )
 
 # "decrease volume to 10%" / "set volume on sonos speakers to 10 percent"
-# must be matched before relative up/down.
 _SET = re.compile(
     rf"""
     {_PREFIX}
@@ -63,6 +62,35 @@ _SET = re.compile(
         (?:the\s+)?(?:sonos\s+)?volume{_WHERE}\s*(?:to|at)?
     )
     \s+(?P<n>\d{{1,3}})\s*(?:percent|%)?
+    \s*[.?!]?\s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_NUDGE_UP = re.compile(
+    rf"""
+    {_PREFIX}
+    (?:
+        (?:turn|volume|increase|raise)\s+up |
+        increase\s+(?:the\s+)?volume
+    )
+    {_WHERE}
+    \s+(?:by\s+)?(?P<n>\d{{1,3}})\s*(?:percent|%)?
+    \s*[.?!]?\s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_NUDGE_DOWN = re.compile(
+    rf"""
+    {_PREFIX}
+    (?:
+        (?:turn|volume|decrease|lower)\s+down |
+        decrease\s+(?:the\s+)?volume |
+        lower\s+(?:the\s+)?volume
+    )
+    {_WHERE}
+    \s+(?:by\s+)?(?P<n>\d{{1,3}})\s*(?:percent|%)?
     \s*[.?!]?\s*$
     """,
     re.IGNORECASE | re.VERBOSE,
@@ -101,10 +129,21 @@ class VolumeCommand(Command):
             )
         m = _SET.match(raw)
         if m:
-            n = int(m.group("n"))
-            n = max(0, min(100, n))
+            n = max(0, min(100, int(m.group("n"))))
             return CommandResult(
                 label=self.name, run=lambda pct=n: volume_client.set_percent(pct)
+            )
+        m = _NUDGE_UP.match(raw)
+        if m:
+            n = max(1, min(50, int(m.group("n"))))
+            return CommandResult(
+                label=self.name, run=lambda d=n: volume_client.nudge(+d)
+            )
+        m = _NUDGE_DOWN.match(raw)
+        if m:
+            n = max(1, min(50, int(m.group("n"))))
+            return CommandResult(
+                label=self.name, run=lambda d=n: volume_client.nudge(-d)
             )
         if _UP.match(raw):
             return CommandResult(

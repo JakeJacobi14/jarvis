@@ -1,4 +1,4 @@
-"""RGB strip / smart lights — WLED first, Home Assistant fallback."""
+"""RGB strip / smart lights — WLED, Feit/Tuya, then Home Assistant."""
 from __future__ import annotations
 
 import re
@@ -63,13 +63,52 @@ _RAINBOW = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+_WARMER = re.compile(
+    r"""
+    ^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?
+    (?:
+        (?:make\s+(?:the\s+)?)?(?:lights?|bulbs?)\s+warmer |
+        warmer\s+(?:the\s+)?(?:lights?|bulbs?)
+    )
+    \s*[.?!]?\s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_COOLER = re.compile(
+    r"""
+    ^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?
+    (?:
+        (?:make\s+(?:the\s+)?)?(?:lights?|bulbs?)\s+(?:cooler|colder) |
+        (?:cooler|colder)\s+(?:the\s+)?(?:lights?|bulbs?)
+    )
+    \s*[.?!]?\s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_WARMTH = re.compile(
+    r"""
+    ^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?
+    (?:
+        (?:set|change)\s+(?:the\s+)?(?:lights?|bulbs?)?\s*
+            (?:warmth|color\s*temp(?:erature)?|colour\s*temp(?:erature)?|cct)
+            \s+(?:to\s+)?(?P<n>\d{1,3})\s*(?:percent|%)? |
+        (?:set|change)\s+(?:the\s+)?(?:lights?|bulbs?)\s+to\s+
+            (?P<k>\d{4})\s*(?:k|kelvin)?
+    )
+    \s*[.?!]?\s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
 _COLOR = re.compile(
     rf"""
     ^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?
     (?:
-        (?:set|make|turn|change)\s+(?:the\s+)?(?:lights?|strip|leds?)
+        (?:set|make|turn|change)\s+(?:the\s+)?(?:lights?|strip|leds?|bulbs?)
             \s+(?:to\s+|)?(?P<c1>{_COLOR_NAMES}) |
-        (?:lights?|strip)\s+(?:to\s+)?(?P<c2>{_COLOR_NAMES})
+        (?:lights?|strip|bulbs?)\s+(?:to\s+)?(?P<c2>{_COLOR_NAMES})
     )
     (?:\s+(?:at\s+)?(?P<b1>\d{{1,3}})\s*(?:percent|%)?)?
     \s*[.?!]?\s*$
@@ -92,9 +131,14 @@ _BRIGHT = re.compile(
 )
 
 
-def _run(action: str, color: str | None = None, brightness: int | None = None):
-    return lambda a=action, c=color, b=brightness: lights_client.apply(
-        action=a, color=c, brightness=b
+def _run(
+    action: str,
+    color: str | None = None,
+    brightness: int | None = None,
+    **kwargs,
+):
+    return lambda: lights_client.apply(
+        action=action, color=color, brightness=brightness, **kwargs
     )
 
 
@@ -113,6 +157,26 @@ class LightsCommand(Command):
             return CommandResult(label=self.name, run=_run("status"))
         if _RAINBOW.match(raw):
             return CommandResult(label=self.name, run=_run("rainbow"))
+        if _WARMER.match(raw):
+            return CommandResult(
+                label=self.name, run=_run("color", warmth_delta=-25)
+            )
+        if _COOLER.match(raw):
+            return CommandResult(
+                label=self.name, run=_run("color", warmth_delta=25)
+            )
+        m = _WARMTH.match(raw)
+        if m:
+            k = m.group("k")
+            if k:
+                kelvin = max(2000, min(7000, int(k)))
+                return CommandResult(
+                    label=self.name, run=_run("color", kelvin=kelvin)
+                )
+            n = max(0, min(100, int(m.group("n"))))
+            return CommandResult(
+                label=self.name, run=_run("color", warmth=n)
+            )
         m = _COLOR.match(raw)
         if m:
             color = (m.group("c1") or m.group("c2") or "").lower()
@@ -130,7 +194,6 @@ class LightsCommand(Command):
                 return CommandResult(label=self.name, run=_run("color", None, 20))
             if "brighten" in lower:
                 return CommandResult(label=self.name, run=_run("color", None, 100))
-            n = int(m.group("n"))
-            n = max(1, min(100, n))
+            n = max(1, min(100, int(m.group("n"))))
             return CommandResult(label=self.name, run=_run("color", None, n))
         return None

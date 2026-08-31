@@ -33,8 +33,10 @@ try:
         sys.path.insert(0, str(shared))
     import sonos_client
 
-    if sonos_client.tts_enabled():
-        ts(f"audio → Sonos {sonos_client.player_name()!r}")
+    if sonos_client.tts_mode() == "overlay":
+        ts(f"audio → Sonos overlay on {sonos_client.player_name()!r} (music ducks)")
+    elif sonos_client.tts_enabled():
+        ts(f"audio → Sonos {sonos_client.player_name()!r} (interrupts music)")
     elif sonos_client.configured():
         ts("audio → local speakers (Spotify stays on Sonos)")
     else:

@@ -2,7 +2,6 @@ from datetime import datetime
 from pathlib import Path
 import numpy as np
 import sounddevice as sd
-from pynput import keyboard
 import threading
 import paho.mqtt.client as mqtt
 import time
@@ -448,12 +447,22 @@ def _has_local_keyboard() -> bool:
     return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
+def _load_keyboard():
+    try:
+        from pynput import keyboard as kb
+        return kb
+    except Exception as e:
+        ts(f"PTT keyboard unavailable ({e}) — wake word only")
+        return None
+
+
 mqtt_client.on_message = on_mqtt_message
 mqtt_client.subscribe("jarvis/wake/detected")
 mqtt_client.subscribe("jarvis/tts/response")
 
 ts("listening for wake word on jarvis/wake/detected")
-if _has_local_keyboard():
+keyboard = _load_keyboard() if _has_local_keyboard() else None
+if keyboard is not None:
     ts("Ready. Hold SPACE to talk, release to stop. Esc to quit.")
     try:
         with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:

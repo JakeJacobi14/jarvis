@@ -18,6 +18,15 @@ services/clipper/.clipbuf/
 # Self-signed cert for the phone panel
 services/control/certs/
 
+# Local Arduino IR blaster (firmware, flash.sh, host client)
+ir-local/
+services/ir/
+
+# Tuya / Feit WiFi bulbs (local keys + host client)
+tuya/
+services/brain/tuya_lights.py
+services/brain/tuya_setup.py
+
 # Spotify Connect device (spotifyd binary + credentials + generated config)
 services/spotify/bin/
 services/spotify/cache/

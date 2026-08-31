@@ -13,8 +13,10 @@ COLORS: dict[str, tuple[int, int, int]] = {
     "white": (255, 255, 255),
     "warm": (255, 170, 80),
     "warm white": (255, 170, 80),
+    "soft white": (255, 190, 110),
     "cool": (180, 210, 255),
     "cool white": (180, 210, 255),
+    "daylight": (200, 220, 255),
     "orange": (255, 90, 0),
     "yellow": (255, 200, 0),
     "purple": (160, 0, 255),
@@ -29,9 +31,19 @@ class LightsError(RuntimeError):
     pass
 
 
+def _tuya_ready() -> bool:
+    try:
+        import tuya_lights
+
+        return tuya_lights.configured()
+    except Exception:
+        return False
+
+
 def configured() -> bool:
     return bool(
         os.environ.get("WLED_HOST", "").strip()
+        or _tuya_ready()
         or (
             os.environ.get("HA_URL", "").strip()
             and os.environ.get("HA_TOKEN", "").strip()
@@ -105,26 +117,37 @@ def _pct_to_bri(pct: int) -> int:
     return max(1, min(255, round(int(pct) * 255 / 100)))
 
 
-def apply(
+def _kelvin_from_warmth(pct: int) -> int:
+    lo = int(os.environ.get("TUYA_KELVIN_MIN", "2700") or 2700)
+    hi = int(os.environ.get("TUYA_KELVIN_MAX", "6500") or 6500)
+    pct = max(0, min(100, int(pct)))
+    return int(round(lo + (hi - lo) * pct / 100))
+
+
+def _warmth_rgb(pct: int) -> tuple[int, int, int]:
+    pct = max(0, min(100, int(pct)))
+    warm = (255, 160, 60)
+    cool = (190, 220, 255)
+    t = pct / 100
+    return tuple(int(round(w + (c - w) * t)) for w, c in zip(warm, cool))  # type: ignore[return-value]
+
+
+def _apply_wled(
     *,
     action: str,
-    color: str | None = None,
-    brightness: int | None = None,
+    color: str | None,
+    brightness: int | None,
+    warmth: int | None = None,
+    warmth_delta: int | None = None,
+    kelvin: int | None = None,
 ) -> str:
-    if not configured():
-        return (
-            "Lights aren't set up yet. Add WLED_HOST or Home Assistant settings "
-            "to the env file."
-        )
-    try:
-        if _wled_base():
-            return _apply_wled(action=action, color=color, brightness=brightness)
-        return _apply_ha(action=action, color=color, brightness=brightness)
-    except LightsError:
-        return "The lights didn't respond."
+    if kelvin is not None:
+        lo = int(os.environ.get("TUYA_KELVIN_MIN", "2700") or 2700)
+        hi = int(os.environ.get("TUYA_KELVIN_MAX", "6500") or 6500)
+        warmth = int(round((max(lo, min(hi, kelvin)) - lo) * 100 / max(1, hi - lo)))
+    if warmth_delta:
+        warmth = max(0, min(100, 50 + int(warmth_delta)))
 
-
-def _apply_wled(*, action: str, color: str | None, brightness: int | None) -> str:
     if action == "status":
         state = _wled_get()
         on = bool(state.get("on"))
@@ -151,7 +174,11 @@ def _apply_wled(*, action: str, color: str | None, brightness: int | None) -> st
     body["on"] = True
     if brightness is not None:
         body["bri"] = _pct_to_bri(brightness)
-    if color:
+    if warmth is not None:
+        body.setdefault("seg", [{}])
+        body["seg"][0]["col"] = [list(_warmth_rgb(warmth))]
+        body["seg"][0]["fx"] = 0
+    elif color:
         rgb = COLORS.get(color.lower())
         if rgb:
             body.setdefault("seg", [{}])
@@ -162,12 +189,21 @@ def _apply_wled(*, action: str, color: str | None, brightness: int | None) -> st
         return f"Lights {color} at {brightness} percent."
     if color:
         return f"Lights are {color}."
+    if warmth is not None:
+        return f"Lights color temperature {warmth} percent."
     if brightness is not None:
         return f"Brightness {brightness} percent."
     return "Done."
 
 
-def _apply_ha(*, action: str, color: str | None, brightness: int | None) -> str:
+def _apply_ha(
+    *,
+    action: str,
+    color: str | None,
+    brightness: int | None,
+    warmth: int | None = None,
+    kelvin: int | None = None,
+) -> str:
     if action == "status":
         return "I can switch them, but I don't read Home Assistant state yet."
     if action == "off":
@@ -178,17 +214,85 @@ def _apply_ha(*, action: str, color: str | None, brightness: int | None) -> str:
     body: dict[str, Any] = {}
     if brightness is not None:
         body["brightness_pct"] = max(1, min(100, int(brightness)))
-    if color:
+    if kelvin is not None:
+        body["color_temp_kelvin"] = int(kelvin)
+    elif warmth is not None:
+        body["color_temp_kelvin"] = _kelvin_from_warmth(warmth)
+    elif color:
         rgb = COLORS.get(color.lower())
         if rgb:
             body["rgb_color"] = list(rgb)
     _ha_call("light/turn_on", body)
-    if action == "on" and not color and brightness is None:
+    if action == "on" and not color and brightness is None and warmth is None:
         return "Lights on."
     if color and brightness is not None:
         return f"Lights {color} at {brightness} percent."
     if color:
         return f"Lights are {color}."
+    if warmth is not None:
+        return f"Lights color temperature {warmth} percent."
     if brightness is not None:
         return f"Brightness {brightness} percent."
     return "Lights on."
+
+
+def apply(
+    *,
+    action: str,
+    color: str | None = None,
+    brightness: int | None = None,
+    warmth: int | None = None,
+    warmth_delta: int | None = None,
+    kelvin: int | None = None,
+) -> str:
+    if _wled_base():
+        try:
+            return _apply_wled(
+                action=action,
+                color=color,
+                brightness=brightness,
+                warmth=warmth,
+                warmth_delta=warmth_delta,
+                kelvin=kelvin,
+            )
+        except LightsError:
+            return "The lights didn't respond."
+    if _tuya_ready():
+        import tuya_lights
+
+        return tuya_lights.apply(
+            action=action,
+            color=color,
+            brightness=brightness,
+            warmth=warmth,
+            warmth_delta=warmth_delta,
+            kelvin=kelvin,
+        )
+    if _ha():
+        try:
+            return _apply_ha(
+                action=action,
+                color=color,
+                brightness=brightness,
+                warmth=warmth,
+                kelvin=kelvin,
+            )
+        except LightsError:
+            return "The lights didn't respond."
+    import sys
+    from pathlib import Path
+
+    ir_local = Path(__file__).resolve().parents[2] / "ir-local"
+    if ir_local.is_dir():
+        sys.path.insert(0, str(ir_local))
+    try:
+        import ir_client
+    except ImportError:
+        return (
+            "Lights aren't set up yet. Pair the Feit bulbs "
+            "(python services/brain/tuya_setup.py) or add WLED_HOST."
+        )
+
+    if action == "status":
+        return "HappyLighting is IR-only, so I can't read the current color."
+    return ir_client.lights_cmd(action, color)

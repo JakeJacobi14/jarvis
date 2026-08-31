@@ -43,6 +43,16 @@ def _mode() -> str:
     return os.environ.get("JARVIS_AUDIO_OUTPUT", "auto").strip().lower() or "auto"
 
 
+def tts_mode() -> str:
+    """local = PC speakers; overlay = duck music on the Amp; sonos = steal the Amp."""
+    mode = os.environ.get("JARVIS_TTS_OUTPUT", "local").strip().lower() or "local"
+    if mode in {"overlay", "clip", "duck", "mix", "announce"}:
+        return "overlay"
+    if mode in {"sonos", "amp", "1", "on", "yes", "true"}:
+        return "sonos"
+    return "local"
+
+
 def wanted() -> bool:
     """True when the user asked for Sonos, or auto and a speaker exists."""
     mode = _mode()
@@ -54,14 +64,10 @@ def wanted() -> bool:
 
 
 def tts_enabled() -> bool:
-    """Spoken replies on the Amp. Default is local so Spotify is not interrupted."""
-    mode = os.environ.get("JARVIS_TTS_OUTPUT", "local").strip().lower() or "local"
-    if mode in {"0", "off", "no", "false", "local", "speakers", "pc", "mac"}:
+    """Spoken replies on the Amp (steal or overlay). Default is local PC speakers."""
+    if tts_mode() not in {"sonos", "overlay"}:
         return False
-    if mode in {"sonos", "amp", "1", "on", "yes", "true"}:
-        return configured()
-    # "auto": still keep music on Sonos; do not steal the Amp for speech.
-    return False
+    return configured()
 
 
 def configured() -> bool:
@@ -314,10 +320,81 @@ def float32_to_wav(samples, sample_rate: int) -> bytes:
 
 _play_lock = threading.Lock()
 _stop = threading.Event()
+_clip_id: str | None = None
+_clip_lock = threading.Lock()
+_API_KEY = "123e4567-e89b-12d3-a456-426655440000"
+
+
+def _ssl_ctx():
+    import ssl
+
+    ctx = ssl._create_unverified_context()
+    return ctx
+
+
+def _player_uid(sp) -> str:
+    uid = (getattr(sp, "uid", None) or "").strip()
+    if uid:
+        return uid
+    info = {}
+    try:
+        info = sp.get_speaker_info() or {}
+    except Exception:
+        pass
+    return str(info.get("uid") or info.get("serial_number") or "").strip()
+
+
+def _clip_url(sp, suffix: str = "") -> str:
+    uid = _player_uid(sp)
+    if not uid:
+        raise RuntimeError("Sonos player id missing")
+    ip = getattr(sp, "ip_address", None) or os.environ.get("JARVIS_SONOS_IP", "").strip()
+    if not ip:
+        raise RuntimeError("Sonos IP missing")
+    return f"https://{ip}:1443/api/v1/players/{uid}/audioClip{suffix}"
+
+
+def _http_json(url: str, *, method: str = "POST", body: dict | None = None) -> dict:
+    import json
+    import urllib.error
+    import urllib.request
+
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={
+            "Content-Type": "application/json",
+            "X-Sonos-Api-Key": _API_KEY,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, context=_ssl_ctx(), timeout=8) as resp:
+            raw = resp.read() or b"{}"
+            return json.loads(raw.decode("utf-8", errors="replace") or "{}")
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        raise RuntimeError(f"Sonos clip {e.code}: {detail or e.reason}") from e
 
 
 def interrupt() -> None:
     _stop.set()
+    if tts_mode() == "overlay":
+        with _clip_lock:
+            clip_id = _clip_id
+        if clip_id:
+            try:
+                sp = speaker()
+                if sp is not None:
+                    _http_json(_clip_url(sp, f"/{clip_id}"), method="DELETE", body=None)
+            except Exception:
+                pass
+        return
     sp = _speaker
     if sp is None:
         return
@@ -327,8 +404,58 @@ def interrupt() -> None:
         pass
 
 
+def _play_overlay(data: bytes, *, seconds: float) -> None:
+    """Duck current music and speak over it (AudioClip). Spotify keeps playing."""
+    global _clip_id
+    sp = speaker()
+    if sp is None:
+        raise RuntimeError("No Sonos speaker found")
+    port = _ensure_http()
+    name = f"tts-{uuid.uuid4().hex}.wav"
+    with _AUDIO_LOCK:
+        _AUDIO[name] = data
+        while len(_AUDIO) > 12:
+            _AUDIO.pop(next(iter(_AUDIO)), None)
+    url = f"http://{lan_ip()}:{port}/{name}"
+    body: dict[str, Any] = {
+        "name": "Jarvis",
+        "appId": "com.jarvis.tts",
+        "clipType": "CUSTOM",
+        "streamUrl": url,
+    }
+    vol = os.environ.get("JARVIS_TTS_CLIP_VOLUME", "").strip()
+    if vol:
+        try:
+            body["volume"] = max(1, min(99, int(vol)))
+        except ValueError:
+            pass
+    _stop.clear()
+    with _play_lock:
+        try:
+            reply = _http_json(_clip_url(sp), body=body)
+        except Exception:
+            with _AUDIO_LOCK:
+                _AUDIO.pop(name, None)
+            raise
+        clip_id = str(reply.get("id") or "").strip() or None
+        with _clip_lock:
+            _clip_id = clip_id
+        deadline = time.monotonic() + max(0.5, seconds) + 0.6
+        try:
+            while time.monotonic() < deadline and not _stop.is_set():
+                time.sleep(0.12)
+        finally:
+            with _clip_lock:
+                _clip_id = None
+            with _AUDIO_LOCK:
+                _AUDIO.pop(name, None)
+
+
 def play_wav_bytes(data: bytes, *, seconds: float) -> None:
     """Play a WAV on the Amp and block until it finishes or is interrupted."""
+    if tts_mode() == "overlay":
+        _play_overlay(data, seconds=seconds)
+        return
     sp = speaker()
     if sp is None:
         raise RuntimeError("No Sonos speaker found")

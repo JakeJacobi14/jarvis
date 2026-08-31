@@ -1,10 +1,12 @@
 from datetime import datetime
 from openwakeword.model import Model
+import openwakeword
 import sounddevice as sd
 import numpy as np
 import paho.mqtt.client as mqtt
 import time
 import os
+import sys
 
 
 def resolve_mic_device():
@@ -38,7 +40,8 @@ def resolve_mic_device():
         return hits[0]
 
 
-model = Model(wakeword_models=["hey_jarvis"], inference_framework="onnx")
+_hey = openwakeword.models["hey_jarvis"]["model_path"]
+model = Model(wakeword_model_paths=[_hey])
 
 mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 mqtt_client.connect("localhost", 1883, keepalive=30)
@@ -92,7 +95,7 @@ _stream_kw = dict(
     blocksize=1280,
     latency="high",
 )
-if hasattr(sd, "WasapiSettings"):
+if sys.platform == "win32" and hasattr(sd, "WasapiSettings"):
     _stream_kw["extra_settings"] = sd.WasapiSettings(exclusive=False)
 
 with sd.InputStream(**_stream_kw):

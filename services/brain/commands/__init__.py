@@ -1,6 +1,9 @@
 """Command registry — order matters (first match wins)."""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 from commands.base import Command, CommandResult
 from commands.camera import CameraCommand
 from commands.cancel import CancelCommand
@@ -16,6 +19,14 @@ from commands.timer import TimerCommand
 from commands.volume import VolumeCommand
 from commands.weather import WeatherCommand
 
+_IR_LOCAL = Path(__file__).resolve().parents[3] / "ir-local"
+if _IR_LOCAL.is_dir():
+    sys.path.insert(0, str(_IR_LOCAL))
+try:
+    from ir_devices import IrDevicesCommand
+except ImportError:
+    IrDevicesCommand = None
+
 # First match wins. Cancel/silence before anything that might speak.
 REGISTERED: list[Command] = [
     CancelCommand(),
@@ -25,13 +36,19 @@ REGISTERED: list[Command] = [
     DateTimeCommand(),
     TimerCommand(),
     VolumeCommand(),
-    LightsCommand(),
-    ClipCommand(),
-    CameraCommand(),
-    WeatherCommand(),
-    SpotifyCommand(),
-    SearchCommand(),
 ]
+if IrDevicesCommand is not None:
+    REGISTERED.append(IrDevicesCommand())
+REGISTERED.extend(
+    [
+        LightsCommand(),
+        ClipCommand(),
+        CameraCommand(),
+        WeatherCommand(),
+        SpotifyCommand(),
+        SearchCommand(),
+    ]
+)
 
 
 def match_command(text: str) -> CommandResult | None:

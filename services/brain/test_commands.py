@@ -1,7 +1,14 @@
 """Voice-command matching tests (no MQTT, no network I/O)."""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 from commands import match_command
+
+_IR_LOCAL = Path(__file__).resolve().parents[2] / "ir-local"
+if _IR_LOCAL.is_dir():
+    sys.path.insert(0, str(_IR_LOCAL))
 
 
 def _label(text: str) -> str | None:
@@ -56,6 +63,34 @@ def test_volume():
     assert r is not None and r.label == "volume" and r.run
     r = match_command("what's the volume on the sonos speakers")
     assert r is not None and r.label == "volume" and r.run
+    r = match_command("turn up sonos speakers 10%")
+    assert r is not None and r.label == "volume" and r.run
+    r = match_command("turn up sonos by 10%")
+    assert r is not None and r.label == "volume" and r.run
+    r = match_command("turn up sonos speakers")
+    assert r is not None and r.label == "volume" and r.run
+
+
+def test_ir_tv_ac():
+    if not (_IR_LOCAL / "ir_devices.py").is_file():
+        return
+    assert _label("turn on the tv") == "ir"
+    assert _label("turn off the television") == "ir"
+    assert _label("turn on the ac") == "ir"
+    assert _label("turn off the air conditioner") == "ir"
+
+
+def test_gree_checksum():
+    if not (_IR_LOCAL / "ir_client.py").is_file():
+        return
+    import ir_client
+
+    state = ir_client.gree_state(power=True, temp_c=24)
+    assert len(state) == 8
+    assert (state[7] >> 4) == ir_client.gree_checksum(state)
+    raw = ir_client.gree_timings(state)
+    assert len(raw) > 80
+    assert raw[0] == ir_client.GREE_HDR_MARK
 
 
 def test_lights():
@@ -63,7 +98,12 @@ def test_lights():
     assert _label("lights off") == "lights"
     assert _label("set the lights to red") == "lights"
     assert _label("set the lights to warm white") == "lights"
+    assert _label("set the lights to daylight") == "lights"
     assert _label("make the lights rainbow") == "lights"
+    assert _label("make the lights warmer") == "lights"
+    assert _label("make the lights cooler") == "lights"
+    assert _label("set warmth to 30 percent") == "lights"
+    assert _label("set the lights to 2700k") == "lights"
 
 
 def test_camera():

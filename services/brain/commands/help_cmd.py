@@ -24,7 +24,8 @@ _HELP = re.compile(
 
 _REPLY = (
     "I can play Spotify, search the web, check the weather, control lights, "
-    "take a photo, clip the last thirty seconds, set a timer, and change volume."
+    "turn the TV and AC on or off, take a photo, clip the last thirty seconds, "
+    "set a timer, and change volume."
 )
 
 
