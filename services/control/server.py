@@ -256,15 +256,7 @@ def list_clips(limit: int = 12) -> list[dict]:
 # ── actions ──────────────────────────────────────────────────────────
 
 
-def run_stack(action: str) -> tuple[bool, str]:
-    if action == "start":
-        argv = [str(START_SH), "--detach"]
-        env = {**os.environ, "JARVIS_SKIP_CONTROL": "1"}
-    elif action == "stop":
-        argv = [str(STOP_SH)]
-        env = os.environ.copy()
-    else:
-        return False, "unknown action"
+def _run_script(argv: list[str], env: dict[str, str], action: str) -> tuple[bool, str]:
     try:
         proc = subprocess.run(
             argv,
@@ -280,6 +272,33 @@ def run_stack(action: str) -> tuple[bool, str]:
     if proc.returncode != 0:
         return False, out[-800:] or f"{action} failed"
     return True, out[-800:] or f"{action} ok"
+
+
+def _reset_ui_states() -> None:
+    for key in _states:
+        _states[key] = "idle"
+    broadcast({"state": ui_state(), "source": "control", "raw": "idle"})
+
+
+def run_stack(action: str) -> tuple[bool, str]:
+    start_env = {**os.environ, "JARVIS_SKIP_CONTROL": "1"}
+    _reset_ui_states()
+    if action == "start":
+        return _run_script([str(START_SH), "--detach"], start_env, action)
+    if action == "stop":
+        return _run_script([str(STOP_SH)], os.environ.copy(), action)
+    if action == "restart":
+        ok_stop, stop_out = _run_script([str(STOP_SH)], os.environ.copy(), "stop")
+        ok_start, start_out = _run_script(
+            [str(START_SH), "--detach"], start_env, "start"
+        )
+        detail = "\n".join(part for part in (stop_out, start_out) if part).strip()
+        if not ok_start:
+            return False, detail or "restart failed"
+        if not ok_stop:
+            return True, detail or "restarted (stop reported an error)"
+        return True, detail or "restarted"
+    return False, "unknown action"
 
 
 def take_snap() -> tuple[bool, str, str | None]:
@@ -334,6 +353,7 @@ def send_command(text: str, *, source: str = "phone") -> bool:
         return False
     # Cut him off mid-sentence like the wake word does.
     mqtt_client.publish("jarvis/tts/interrupt", "stop")
+    mqtt_client.publish("jarvis/stt/followup_arm", "skip")
     mqtt_client.publish("jarvis/stt/text", text)
     add_transcript("user", text, source=source)
     ts(f"command from {source} → {text!r}")
@@ -544,6 +564,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/status":
             payload = stack_status()
             payload["latest_snap"] = latest_snap()
+            payload["this_host"] = client_is_box(self)
             self._json(200, payload)
             return
 
@@ -587,6 +608,9 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if path == "/app.css":
             self._file(WEB / "app.css", "text/css; charset=utf-8")
+            return
+        if path == "/visor.js":
+            self._file(WEB / "visor.js", "application/javascript; charset=utf-8")
             return
         if path == "/manifest.webmanifest":
             self._file(WEB / "manifest.webmanifest", "application/manifest+json")
@@ -651,8 +675,8 @@ class Handler(SimpleHTTPRequestHandler):
 
         data = self._read_json()
 
-        if path in {"/api/start", "/api/stop"}:
-            action = "start" if path.endswith("start") else "stop"
+        if path in {"/api/start", "/api/stop", "/api/restart"}:
+            action = path.rsplit("/", 1)[-1]
             with _action_lock:
                 ok, detail = run_stack(action)
             self._json(200 if ok else 500, {"ok": ok, "detail": detail, **stack_status()})
@@ -743,7 +767,7 @@ class Handler(SimpleHTTPRequestHandler):
             hello = json.dumps(
                 {
                     "state": ui_state(),
-                    "status": stack_status(),
+                    "status": {**stack_status(), "this_host": client_is_box(self)},
                     "transcript_all": transcript_snapshot(),
                 }
             )
@@ -798,6 +822,30 @@ def lan_ip() -> str:
         return "127.0.0.1"
     finally:
         s.close()
+
+
+def _local_ips() -> set[str]:
+    ips = {"127.0.0.1", "::1", "localhost"}
+    try:
+        ips.add(lan_ip())
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            host = info[4][0]
+            if host:
+                ips.add(host)
+    except OSError:
+        pass
+    return ips
+
+
+def client_is_box(handler: Handler) -> bool:
+    """True when the browser is on the Jarvis machine (room mic already lives here)."""
+    ip = handler.client_address[0] if handler.client_address else ""
+    if ip.startswith("::ffff:"):
+        ip = ip.rsplit(":", 1)[-1]
+    return ip in _local_ips()
 
 
 def ensure_cert() -> tuple[Path, Path] | None:

@@ -39,14 +39,33 @@ def resolve_mic_device():
         return hits[0]
 
 
-model = Model(wakeword_models=["hey_jarvis"])
+# Linux wheels often lack tflite-runtime; ONNX works on Mac + Ubuntu.
+model = Model(wakeword_models=["hey_jarvis"], inference_framework="onnx")
 
 mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 mqtt_client.connect("localhost", 1883, keepalive=30)
 mqtt_client.loop_start()
 
-COOLDOWN_SEC = 3.0
+# Music in the room knocks scores down; 0.65 was missing real wakes.
+COOLDOWN_SEC = float(os.environ.get("JARVIS_WAKE_COOLDOWN", "2.0") or "2.0")
+THRESHOLD = float(os.environ.get("JARVIS_WAKE_THRESHOLD", "0.48") or "0.48")
 _last_detect = 0.0
+_last_near = 0.0
+_tts_speaking = False
+_tts_guard_until = 0.0
+
+
+def _on_tts_status(_client, _userdata, msg):
+    global _tts_speaking, _tts_guard_until
+    speaking = (msg.payload or b"").decode().strip().lower() == "speaking"
+    if _tts_speaking and not speaking:
+        # Tail of the clip still leaks into the mic after MQTT goes idle.
+        _tts_guard_until = time.monotonic() + 2.0
+    _tts_speaking = speaking
+
+
+mqtt_client.message_callback_add("jarvis/status/tts", _on_tts_status)
+mqtt_client.subscribe("jarvis/status/tts")
 
 
 def ts(msg: str):
@@ -71,19 +90,31 @@ else:
 ts("Listening for 'Hey Jarvis'...")
 
 def callback(indata, frames, time_info, status):
-    global _last_detect
-    audio = (indata[:, 0] * 32767).astype(np.int16)
-    t0 = time.perf_counter()
-    predictions = model.predict(audio)
-    infer_ms = (time.perf_counter() - t0) * 1000
-    now = time.monotonic()
-    for wakeword, score in predictions.items():
-        if score > 0.65 and (now - _last_detect) >= COOLDOWN_SEC:
-            _last_detect = now
-            ts(f"detected '{wakeword}' score={score:.2f} (infer {infer_ms:.1f}ms)")
-            mqtt_client.publish("jarvis/wake/detected", "detected")
-            mqtt_client.publish("jarvis/tts/interrupt", "stop")
-            mqtt_client.publish("jarvis/status/stt", "listening")
+    global _last_detect, _last_near
+    try:
+        audio = (indata[:, 0] * 32767).astype(np.int16)
+        t0 = time.perf_counter()
+        predictions = model.predict(audio)
+        infer_ms = (time.perf_counter() - t0) * 1000
+        now = time.monotonic()
+        blocked = _tts_speaking or now < _tts_guard_until
+        for wakeword, score in predictions.items():
+            if blocked:
+                if score > THRESHOLD and (now - _last_near) >= 4.0:
+                    _last_near = now
+                    ts(f"ignored '{wakeword}' score={score:.2f} (he's talking)")
+                continue
+            if score > THRESHOLD and (now - _last_detect) >= COOLDOWN_SEC:
+                _last_detect = now
+                ts(f"detected '{wakeword}' score={score:.2f} (infer {infer_ms:.1f}ms)")
+                mqtt_client.publish("jarvis/wake/detected", "detected")
+                mqtt_client.publish("jarvis/tts/interrupt", "stop")
+                mqtt_client.publish("jarvis/status/stt", "listening")
+            elif score > THRESHOLD * 0.75 and (now - _last_near) >= 15.0:
+                _last_near = now
+                ts(f"near-miss '{wakeword}' score={score:.2f} (need {THRESHOLD:.2f})")
+    except Exception as e:
+        ts(f"callback error: {e}")
 
 _stream_kw = dict(
     samplerate=16000,

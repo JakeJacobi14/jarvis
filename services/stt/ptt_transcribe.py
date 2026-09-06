@@ -6,6 +6,7 @@ import threading
 import paho.mqtt.client as mqtt
 import time
 import os
+import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -65,6 +66,25 @@ SILENCE_THRESHOLD = 0.01
 SILENCE_DURATION = 0.7
 MAX_RECORD_SECONDS = 10.0
 FOLLOWUP_WINDOW = 3.0
+# Let speaker echo die before the room mic opens again.
+FOLLOWUP_SETTLE = 0.4
+# Play/pause would make follow-up transcribe the song.
+_SKIP_FOLLOWUP = re.compile(
+    r"""
+    \b(?:
+        play(?:\s+me)? |
+        put\s+on |
+        pause |
+        resume |
+        unpause |
+        skip |
+        next(?:\s+song)? |
+        previous(?:\s+song)? |
+        stop(?:\s+(?:the\s+)?(?:music|song|spotify|playing))
+    )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 
 
 def ts(msg: str):
@@ -106,7 +126,8 @@ def publish_text(full_text: str, *, elapsed: float, source: str = "wake"):
     mqtt_client.publish(topic, full_text)
     # After he answers a wake (or PTT) turn, listen once more. Follow-ups
     # themselves must not re-arm or TV/echo would loop STT+LLM+TTS forever.
-    _arm_followup = source != "followup"
+    # Music turns also skip — the room mic would hear the song.
+    _arm_followup = source != "followup" and not _SKIP_FOLLOWUP.search(full_text)
 
 
 mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
@@ -184,7 +205,9 @@ else:
 # ── whisper helpers ──────────────────────────────────────────────────
 is_space_pressed = False
 _wake_busy = False
+_listen_gen = 0
 _arm_followup = False  # one listen-again after a wake turn; never chain
+_listen_kind = None  # "wake" | "followup" | None
 _ptt_stop = None  # threading.Event for cartesia PTT
 
 
@@ -206,8 +229,9 @@ def publish_status(state: str):
     mqtt_client.publish("jarvis/status/stt", state)
 
 
-def cartesia_listen_wake():
-    global _wake_busy
+def cartesia_listen_wake(gen: int = 0):
+    global _wake_busy, _listen_kind
+    _listen_kind = "wake"
     try:
         ts("wake received — Ink listening for your turn...")
         publish_status("listening")
@@ -217,11 +241,13 @@ def cartesia_listen_wake():
             mqtt_client.publish("jarvis/tts/interrupt", "stop")
 
         text = ink.listen_turn(
-            idle_timeout=None,
+            idle_timeout=5.0,
             max_seconds=MAX_RECORD_SECONDS,
             on_speech_start=on_start,
         )
         elapsed = time.perf_counter() - t0
+        if gen != _listen_gen:
+            return
         if not text:
             ts(f"no speech heard ({elapsed:.2f}s)")
             return
@@ -229,13 +255,18 @@ def cartesia_listen_wake():
     except Exception as e:
         ts(f"error: {e}")
     finally:
-        publish_status("idle")
-        _wake_busy = False
+        if gen == _listen_gen:
+            publish_status("idle")
+            _listen_kind = None
+            _wake_busy = False
 
 
-def cartesia_listen_followup():
-    global _wake_busy
+def cartesia_listen_followup(gen: int = 0):
+    global _wake_busy, _listen_kind
+    _listen_kind = "followup"
     try:
+        if FOLLOWUP_SETTLE:
+            time.sleep(FOLLOWUP_SETTLE)
         ts(f"follow-up window open ({FOLLOWUP_WINDOW}s) via Ink...")
         publish_status("listening")
         t0 = time.perf_counter()
@@ -244,6 +275,8 @@ def cartesia_listen_followup():
             max_seconds=MAX_RECORD_SECONDS,
         )
         elapsed = time.perf_counter() - t0
+        if gen != _listen_gen:
+            return
         if not text:
             ts("no follow-up — back to wake word")
             return
@@ -251,12 +284,15 @@ def cartesia_listen_followup():
     except Exception as e:
         ts(f"error: {e}")
     finally:
-        publish_status("idle")
-        _wake_busy = False
+        if gen == _listen_gen:
+            publish_status("idle")
+            _listen_kind = None
+            _wake_busy = False
 
 
 def whisper_record_after_wake():
-    global _wake_busy
+    global _wake_busy, _listen_kind
+    _listen_kind = "wake"
     try:
         ts("wake received — listening until you finish speaking...")
         publish_status("listening")
@@ -296,12 +332,16 @@ def whisper_record_after_wake():
         whisper_transcribe_async(audio)
     finally:
         publish_status("idle")
+        _listen_kind = None
         _wake_busy = False
 
 
 def whisper_record_followup():
-    global _wake_busy
+    global _wake_busy, _listen_kind
+    _listen_kind = "followup"
     try:
+        if FOLLOWUP_SETTLE:
+            time.sleep(FOLLOWUP_SETTLE)
         ts(f"follow-up window open ({FOLLOWUP_WINDOW}s)...")
         publish_status("listening")
         recorder.start()
@@ -359,6 +399,7 @@ def whisper_record_followup():
         publish_text(full_text, elapsed=elapsed, source="followup")
     finally:
         publish_status("idle")
+        _listen_kind = None
         _wake_busy = False
 
 
@@ -411,10 +452,46 @@ def on_release(key):
         return False
 
 
+def _abort_listen(*, followup_only: bool = True, keep_arm: bool = False):
+    """Stop a room STT capture without touching the always-on wake-word stream.
+
+    Wake word publishes interrupt + detected together. Canceling a brand-new
+    wake listen would swallow the command. Phone barge-in only needs to kill
+    a pending follow-up (and never the wake-word process).
+    """
+    global _arm_followup
+    if not keep_arm:
+        _arm_followup = False
+    if followup_only and _listen_kind != "followup":
+        return
+    if ink is not None:
+        try:
+            ink.cancel()
+        except Exception:
+            pass
+    if _ptt_stop is not None:
+        _ptt_stop.set()
+
+
 def on_mqtt_message(client, userdata, msg):
-    global _wake_busy, _arm_followup
+    global _wake_busy, _arm_followup, _listen_gen
     topic = msg.topic
     payload = msg.payload.decode()
+
+    # Phone / barge-in: drop the pending follow-up and release the room STT
+    # stream so the always-on wake mic stays the only capture on this machine.
+    if topic == "jarvis/tts/interrupt":
+        # Don't drop the follow-up arm — his own voice used to publish
+        # interrupt and then we never opened the room mic again.
+        _abort_listen(keep_arm=True)
+        return
+    if topic == "jarvis/stt/followup_arm":
+        if payload.strip().lower() in {"0", "skip", "off", "no"}:
+            _arm_followup = False
+            ts("follow-up disarmed")
+        elif payload.strip().lower() in {"1", "arm", "on", "yes"}:
+            _arm_followup = True
+        return
 
     if topic == "jarvis/wake/detected" and payload != "detected":
         return
@@ -424,11 +501,20 @@ def on_mqtt_message(client, userdata, msg):
         if not _arm_followup:
             return
         _arm_followup = False
-    if _wake_busy:
-        return
-    if PROVIDER == "whisper" and recorder._recording:
-        return
+        if _wake_busy:
+            ts("follow-up after TTS — dropping stray listen")
+            _abort_listen(followup_only=False, keep_arm=True)
+    elif topic == "jarvis/wake/detected":
+        _arm_followup = False
+        if _wake_busy:
+            ts("wake barged in — restarting listen")
+            _abort_listen(followup_only=False)
+    if PROVIDER == "whisper" and recorder is not None and recorder._recording:
+        if topic != "jarvis/wake/detected":
+            return
 
+    _listen_gen += 1
+    gen = _listen_gen
     _wake_busy = True
     if PROVIDER == "cartesia":
         target = (
@@ -436,12 +522,13 @@ def on_mqtt_message(client, userdata, msg):
             if topic == "jarvis/tts/response"
             else cartesia_listen_wake
         )
-    else:
-        target = (
-            whisper_record_followup
-            if topic == "jarvis/tts/response"
-            else whisper_record_after_wake
-        )
+        threading.Thread(target=target, args=(gen,), daemon=True).start()
+        return
+    target = (
+        whisper_record_followup
+        if topic == "jarvis/tts/response"
+        else whisper_record_after_wake
+    )
     threading.Thread(target=target, daemon=True).start()
 
 
@@ -468,6 +555,8 @@ def _load_keyboard():
 mqtt_client.on_message = on_mqtt_message
 mqtt_client.subscribe("jarvis/wake/detected")
 mqtt_client.subscribe("jarvis/tts/response")
+mqtt_client.subscribe("jarvis/tts/interrupt")
+mqtt_client.subscribe("jarvis/stt/followup_arm")
 
 ts("listening for wake word on jarvis/wake/detected")
 keyboard = _load_keyboard() if _has_local_keyboard() else None

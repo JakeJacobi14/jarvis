@@ -116,6 +116,21 @@ _COLOR = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+_BRIGHT_DELTA = re.compile(
+    r"""
+    ^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?
+    (?:
+        turn\s+(?:the\s+)?lights?\s+(?P<dir1>up|down|brighter|dimmer) |
+        turn\s+(?P<dir2>up|down)\s+(?:the\s+)?lights? |
+        (?:make\s+(?:the\s+)?)?lights?\s+(?P<dir3>brighter|dimmer|up|down) |
+        (?P<dir4>brighten|dim)\s+(?:the\s+)?lights?
+    )
+    (?:\s+(?:by\s+)?(?P<n>\d{1,3})\s*(?:percent|%)?)?
+    \s*[.?!]?\s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
 _BRIGHT = re.compile(
     r"""
     ^\s*(?:hey\s+jarvis[,.]?\s+)?(?:please\s+)?
@@ -186,6 +201,18 @@ class LightsCommand(Command):
                 brightness = max(1, min(100, brightness))
             return CommandResult(
                 label=self.name, run=_run("color", color, brightness)
+            )
+        m = _BRIGHT_DELTA.match(raw)
+        if m:
+            direction = (
+                m.group("dir1") or m.group("dir2") or m.group("dir3") or m.group("dir4") or ""
+            ).lower()
+            step = m.group("n")
+            delta = int(step) if step else 20
+            if direction in {"down", "dimmer", "dim"}:
+                delta = -delta
+            return CommandResult(
+                label=self.name, run=_run("color", brightness_delta=delta)
             )
         m = _BRIGHT.match(raw)
         if m:

@@ -16,6 +16,7 @@ Photos/
 clips/
 Clips/
 services/clipper/.clipbuf/
+.ttsbuf/
 
 # Self-signed cert for the phone panel
 services/control/certs/

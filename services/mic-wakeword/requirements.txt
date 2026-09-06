@@ -1,4 +1,6 @@
-openwakeword
+# Linux + Python 3.12: start.sh installs openwakeword with --no-deps.
+# Its extra dep tflite-runtime has no 3.12 wheel; we use ONNX instead.
+openwakeword>=0.6.0
 sounddevice
 numpy
 paho-mqtt

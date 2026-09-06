@@ -44,13 +44,18 @@ def _mode() -> str:
 
 
 def tts_mode() -> str:
-    """local = PC speakers; overlay = duck music on the Amp; sonos = steal the Amp."""
-    mode = os.environ.get("JARVIS_TTS_OUTPUT", "local").strip().lower() or "local"
-    if mode in {"overlay", "clip", "duck", "mix", "announce"}:
-        return "overlay"
+    """overlay = duck music on the Amp; sonos = steal the Amp; local = PC speakers.
+
+    Default is overlay so speech and Spotify share the same speakers.
+    """
+    mode = os.environ.get("JARVIS_TTS_OUTPUT", "overlay").strip().lower() or "overlay"
+    if mode in {"local", "mac", "pc", "computer", "speakers"}:
+        return "local"
     if mode in {"sonos", "amp", "1", "on", "yes", "true"}:
         return "sonos"
-    return "local"
+    if mode in {"overlay", "clip", "duck", "mix", "announce"}:
+        return "overlay"
+    return "overlay"
 
 
 def wanted() -> bool:
@@ -229,21 +234,69 @@ def spotify_hints() -> list[str]:
 # ── http file server (Amp fetches TTS from here) ─────────────────────
 
 _AUDIO: dict[str, bytes] = {}
+_FETCHED: set[str] = set()
 _AUDIO_LOCK = threading.Lock()
 _http: ThreadingHTTPServer | None = None
 _http_port = 0
+_TTS_BUF = Path(os.environ.get("JARVIS_SONOS_HTTP_DIR") or ROOT / ".ttsbuf")
+
+
+def _advertised_port() -> int:
+    return int(os.environ.get("JARVIS_SONOS_HTTP_PORT", "8742") or "8742")
+
+
+def _listen_port() -> int:
+    raw = os.environ.get("JARVIS_SONOS_HTTP_LISTEN_PORT", "").strip()
+    if raw:
+        return int(raw)
+    return _advertised_port()
+
+
+def _external_http() -> bool:
+    raw = os.environ.get("JARVIS_SONOS_HTTP_EXTERNAL", "").strip().lower()
+    return raw in {"1", "on", "yes", "true"}
+
+
+def _publish_wav(name: str, data: bytes) -> None:
+    with _AUDIO_LOCK:
+        _AUDIO[name] = data
+        while len(_AUDIO) > 12:
+            old = next(iter(_AUDIO))
+            _AUDIO.pop(old, None)
+            try:
+                (_TTS_BUF / old).unlink(missing_ok=True)
+            except OSError:
+                pass
+    try:
+        _TTS_BUF.mkdir(parents=True, exist_ok=True)
+        path = _TTS_BUF / name
+        path.write_bytes(data)
+        path.chmod(0o644)
+    except OSError:
+        pass
+
+
+def _unpublish_wav(name: str) -> None:
+    with _AUDIO_LOCK:
+        _AUDIO.pop(name, None)
+    try:
+        (_TTS_BUF / name).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 class _AudioHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt: str, *args):
-        return
+        print(f"[sonos-http] {self.address_string()} {fmt % args}", flush=True)
 
     def do_GET(self):
         name = Path(unquote(urlparse(self.path).path)).name
         with _AUDIO_LOCK:
             data = _AUDIO.get(name)
+            if data is not None:
+                _FETCHED.add(name)
         if not data:
             self.send_response(404)
             self.send_header("Content-Length", "0")
@@ -279,9 +332,12 @@ class _AudioServer(ThreadingHTTPServer):
 
 def _ensure_http() -> int:
     global _http, _http_port
+    if _external_http():
+        _TTS_BUF.mkdir(parents=True, exist_ok=True)
+        return _advertised_port()
     if _http is not None:
         return _http_port
-    preferred = int(os.environ.get("JARVIS_SONOS_HTTP_PORT", "8742") or "8742")
+    preferred = _listen_port()
     host = os.environ.get("JARVIS_SONOS_HTTP_BIND", "0.0.0.0").strip() or "0.0.0.0"
     last_err: Exception | None = None
     for port in (preferred, 0):
@@ -290,7 +346,7 @@ def _ensure_http() -> int:
             _http = httpd
             _http_port = int(httpd.server_address[1])
             threading.Thread(target=httpd.serve_forever, daemon=True).start()
-            return _http_port
+            return _advertised_port() if _http_port == preferred else _http_port
         except OSError as e:
             last_err = e
             continue
@@ -311,7 +367,10 @@ def float32_to_wav(samples, sample_rate: int) -> bytes:
     import numpy as np
 
     arr = np.asarray(samples, dtype=np.float32).reshape(-1)
-    clipped = np.clip(arr, -1.0, 1.0)
+    # Slight digital gain so the clip is audible over ducked music
+    # without sending Sonos a player-volume field.
+    gain = float(os.environ.get("JARVIS_TTS_GAIN", "1.45") or "1.45")
+    clipped = np.clip(arr * max(0.5, min(2.5, gain)), -1.0, 1.0)
     pcm = (clipped * 32767.0).astype("<i2").tobytes()
     return _wav_bytes(pcm, sample_rate, 1)
 
@@ -382,18 +441,55 @@ def _http_json(url: str, *, method: str = "POST", body: dict | None = None) -> d
         raise RuntimeError(f"Sonos clip {e.code}: {detail or e.reason}") from e
 
 
+def _cancel_clip() -> None:
+    global _clip_id
+    with _clip_lock:
+        clip_id = _clip_id
+        _clip_id = None
+    if not clip_id:
+        return
+    try:
+        sp = speaker()
+        if sp is not None:
+            _http_json(_clip_url(sp, f"/{clip_id}"), method="DELETE", body=None)
+    except Exception:
+        pass
+
+
+def _clip_fetched(name: str, *, since_s: float) -> bool:
+    with _AUDIO_LOCK:
+        if name in _FETCHED:
+            return True
+    if not _external_http():
+        return False
+    try:
+        import subprocess
+
+        out = subprocess.check_output(
+            [
+                "docker",
+                "logs",
+                "--since",
+                f"{max(5, int(since_s) + 3)}s",
+                "jarvis-sonos-http",
+            ],
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=1.5,
+        )
+    except Exception:
+        return False
+    if name in out:
+        with _AUDIO_LOCK:
+            _FETCHED.add(name)
+        return True
+    return False
+
+
 def interrupt() -> None:
     _stop.set()
     if tts_mode() == "overlay":
-        with _clip_lock:
-            clip_id = _clip_id
-        if clip_id:
-            try:
-                sp = speaker()
-                if sp is not None:
-                    _http_json(_clip_url(sp, f"/{clip_id}"), method="DELETE", body=None)
-            except Exception:
-                pass
+        _cancel_clip()
         return
     sp = _speaker
     if sp is None:
@@ -412,10 +508,7 @@ def _play_overlay(data: bytes, *, seconds: float) -> None:
         raise RuntimeError("No Sonos speaker found")
     port = _ensure_http()
     name = f"tts-{uuid.uuid4().hex}.wav"
-    with _AUDIO_LOCK:
-        _AUDIO[name] = data
-        while len(_AUDIO) > 12:
-            _AUDIO.pop(next(iter(_AUDIO)), None)
+    _publish_wav(name, data)
     url = f"http://{lan_ip()}:{port}/{name}"
     body: dict[str, Any] = {
         "name": "Jarvis",
@@ -430,25 +523,42 @@ def _play_overlay(data: bytes, *, seconds: float) -> None:
         except ValueError:
             pass
     _stop.clear()
+    t_post = time.perf_counter()
     with _play_lock:
+        _cancel_clip()
         try:
             reply = _http_json(_clip_url(sp), body=body)
         except Exception:
-            with _AUDIO_LOCK:
-                _AUDIO.pop(name, None)
+            _unpublish_wav(name)
             raise
+        post_s = time.perf_counter() - t_post
         clip_id = str(reply.get("id") or "").strip() or None
         with _clip_lock:
             _clip_id = clip_id
-        deadline = time.monotonic() + max(0.5, seconds) + 0.6
+        # Sonos often accepts the POST immediately and GETs the WAV much
+        # later. Wait for that GET, then hold for the clip length.
+        t_fetch = time.monotonic()
+        fetched = False
+        while time.monotonic() - t_fetch < 12.0 and not _stop.is_set():
+            if _clip_fetched(name, since_s=time.monotonic() - t_fetch + 4):
+                fetched = True
+                break
+            time.sleep(0.2)
+        fetch_s = time.monotonic() - t_fetch
+        remain = max(0.4, seconds) + 0.45
+        print(
+            f"[sonos] overlay {url} ({seconds:.2f}s, post {post_s:.2f}s, "
+            f"get {'%.2f' % fetch_s if fetched else 'timeout'}s)",
+            flush=True,
+        )
+        deadline = time.monotonic() + remain
         try:
             while time.monotonic() < deadline and not _stop.is_set():
                 time.sleep(0.12)
         finally:
             with _clip_lock:
                 _clip_id = None
-            with _AUDIO_LOCK:
-                _AUDIO.pop(name, None)
+            threading.Timer(20.0, _unpublish_wav, args=(name,)).start()
 
 
 def play_wav_bytes(data: bytes, *, seconds: float) -> None:
@@ -467,19 +577,16 @@ def play_wav_bytes(data: bytes, *, seconds: float) -> None:
 
     port = _ensure_http()
     name = f"tts-{uuid.uuid4().hex}.wav"
-    with _AUDIO_LOCK:
-        _AUDIO[name] = data
-        while len(_AUDIO) > 12:
-            _AUDIO.pop(next(iter(_AUDIO)), None)
+    _publish_wav(name, data)
 
     url = f"http://{lan_ip()}:{port}/{name}"
+    print(f"[sonos] play {url} ({seconds:.2f}s)", flush=True)
     _stop.clear()
     with _play_lock:
         try:
             sp.play_uri(url)
         except Exception as e:
-            with _AUDIO_LOCK:
-                _AUDIO.pop(name, None)
+            _unpublish_wav(name)
             raise RuntimeError(f"Sonos play failed: {e}") from e
 
         deadline = time.monotonic() + max(0.4, seconds) + 4.0
@@ -507,8 +614,7 @@ def play_wav_bytes(data: bytes, *, seconds: float) -> None:
                 break
             time.sleep(0.15)
 
-    with _AUDIO_LOCK:
-        _AUDIO.pop(name, None)
+    _unpublish_wav(name)
 
 
 def play_float32(samples, sample_rate: int) -> float:

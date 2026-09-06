@@ -55,6 +55,14 @@ if [[ -f "$ROOT/.env" ]]; then
   echo "==> Loaded .env"
 fi
 
+# PipeWire/Pulse are invisible over SSH unless the user runtime dir is set.
+if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
+  _rt="/run/user/$(id -u)"
+  if [[ -d "$_rt" ]]; then
+    export XDG_RUNTIME_DIR="$_rt"
+  fi
+fi
+
 OS="$(uname -s)"
 # Default: open Terminals on macOS, background everywhere else
 if [[ "$OS" == "Darwin" ]]; then
@@ -119,7 +127,14 @@ ensure_venv() {
     if [[ ! -f "$stamp" ]] || [[ "$req" -nt "$stamp" ]]; then
       echo "==> Installing deps for $dir..."
       "$venv/bin/pip" install -q --upgrade pip
-      "$venv/bin/pip" install -q -r "$req"
+      if [[ "$dir" == "mic-wakeword" ]]; then
+        # openwakeword lists tflite-runtime on Linux; no wheel for Python 3.12.
+        # We run ONNX only (wakeword.py sets inference_framework="onnx").
+        "$venv/bin/pip" install -q sounddevice numpy paho-mqtt onnxruntime
+        "$venv/bin/pip" install -q --no-deps "openwakeword>=0.6.0"
+      else
+        "$venv/bin/pip" install -q -r "$req"
+      fi
       touch "$stamp"
     fi
   fi
@@ -183,6 +198,47 @@ ensure_control() {
   fi
   start_service_bg "control" "control" "server.py"
   print_control_url
+}
+
+pin_linux_mic() {
+  # Keep the USB webcam as Pulse default so wake/STT/clipper share it.
+  [[ "$OS" == "Linux" ]] || return 0
+  command -v pactl >/dev/null 2>&1 || return 0
+  local src="${JARVIS_PULSE_SOURCE:-${JARVIS_CLIP_AUDIO_DEVICE:-}}"
+  if [[ "$src" == alsa_input.* ]]; then
+    pactl set-default-source "$src" >/dev/null 2>&1 || true
+  fi
+}
+
+ensure_sonos_http() {
+  # Linux UFW blocks host-bound 8742 (Sonos must fetch TTS WAVs). Docker
+  # published ports punch that hole. macOS does not need this.
+  [[ "$OS" == "Linux" ]] || return 0
+  command -v docker >/dev/null 2>&1 || {
+    echo "NOTE: docker not found — Sonos speech may be blocked by the firewall (port 8742)"
+    return 0
+  }
+  local dir="${JARVIS_SONOS_HTTP_DIR:-$ROOT/.ttsbuf}"
+  local port="${JARVIS_SONOS_HTTP_PORT:-8742}"
+  mkdir -p "$dir"
+  export JARVIS_SONOS_HTTP_DIR="$dir"
+  export JARVIS_SONOS_HTTP_EXTERNAL=1
+  export JARVIS_SONOS_HTTP_HOST="${JARVIS_SONOS_HTTP_HOST:-$(lan_ip)}"
+  docker rm -f jarvis-port-probe >/dev/null 2>&1 || true
+  if docker inspect -f '{{.State.Running}}' jarvis-sonos-http 2>/dev/null | grep -qx true; then
+    echo "==> Sonos TTS HTTP already published on :$port"
+    return 0
+  fi
+  docker rm -f jarvis-sonos-http >/dev/null 2>&1 || true
+  if docker run -d --name jarvis-sonos-http --restart unless-stopped \
+      -p "${port}:80" \
+      -v "$dir:/usr/share/nginx/html:ro" \
+      nginx:alpine >/dev/null; then
+    echo "==> Sonos TTS HTTP published on :$port (UFW bypass)"
+  else
+    echo "WARNING: could not publish Sonos TTS HTTP on :$port"
+    unset JARVIS_SONOS_HTTP_EXTERNAL
+  fi
 }
 
 ensure_clipper() {
@@ -648,6 +704,8 @@ ensure_broker
 ensure_llm
 ensure_stt
 ensure_spotify_device
+pin_linux_mic
+ensure_sonos_http
 
 # Fresh timing session for this run
 : >"$TIMING_LOG"

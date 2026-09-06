@@ -79,21 +79,20 @@ class JarvisTTS:
         synth_s = time.perf_counter() - t0
 
         t1 = time.perf_counter()
-        played_sonos = False
-        try:
-            shared = Path(__file__).resolve().parents[1] / "sonos"
-            import sys
+        shared = Path(__file__).resolve().parents[1] / "sonos"
+        import sys
 
-            if str(shared) not in sys.path:
-                sys.path.insert(0, str(shared))
-            import sonos_client
+        if str(shared) not in sys.path:
+            sys.path.insert(0, str(shared))
+        import sonos_client
 
-            if sonos_client.tts_enabled():
-                sonos_client.play_float32(samples, sample_rate)
-                played_sonos = True
-        except Exception:
-            played_sonos = False
-        if not played_sonos:
+        if sonos_client.tts_mode() in {"sonos", "overlay"}:
+            if not sonos_client.tts_enabled():
+                raise RuntimeError(
+                    "Sonos speech is required but no speaker was found"
+                )
+            sonos_client.play_float32(samples, sample_rate)
+        else:
             sd.play(samples, sample_rate)
             sd.wait()
         play_s = time.perf_counter() - t1

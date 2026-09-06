@@ -159,18 +159,26 @@ class SpotifyCommand(Command):
 
         for pat, action in _CONTROL:
             if pat.match(raw):
-                return CommandResult(label=self.name, spotify_action=action)
+                return CommandResult(
+                    label=self.name, spotify_action=action, skip_followup=True
+                )
 
         # "play music" with no title → resume / ask
         if _PLAY_GENERIC.search(raw):
-            return CommandResult(label=self.name, spotify_action="resume_or_ask")
+            return CommandResult(
+                label=self.name, spotify_action="resume_or_ask", skip_followup=True
+            )
 
         m = _PLAY.search(raw)
         if m:
             q = _clean_play_query(m.group("q"))
             if q.lower() in _GENERIC_QUERIES:
-                return CommandResult(label=self.name, spotify_action="resume_or_ask")
+                return CommandResult(
+                    label=self.name, spotify_action="resume_or_ask", skip_followup=True
+                )
             if q and not _PLAY_BLOCKLIST.match(q):
-                return CommandResult(label=self.name, spotify_query=q)
+                return CommandResult(
+                    label=self.name, spotify_query=q, skip_followup=True
+                )
 
         return None

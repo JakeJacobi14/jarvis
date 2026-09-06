@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#070b14">
   <link rel="manifest" href="/manifest.webmanifest">
-  <link rel="stylesheet" href="/app.css?v=5">
+  <link rel="stylesheet" href="/app.css?v=11">
   <title>Jarvis</title>
 </head>
 <body class="dashboard is-idle">
@@ -16,6 +16,7 @@
       <h1>Jarvis</h1>
       <a class="btn ghost" href="/avatar">Full screen</a>
     </div>
+    <div class="run-banner off" id="run-banner">Checking…</div>
 
     <div class="card">
       <div class="visor" id="visor">
@@ -23,11 +24,15 @@
           <circle class="halo" cx="100" cy="100" r="88"/>
           <circle class="ring" cx="100" cy="100" r="74"/>
           <circle class="ring-dash" cx="100" cy="100" r="60"/>
-          <circle class="core-glow" cx="100" cy="100" r="30"/>
-          <circle class="core" cx="100" cy="100" r="20"/>
-          <rect class="eye" x="78" y="90" width="10" height="16" rx="3"/>
-          <rect class="eye" x="112" y="90" width="10" height="16" rx="3"/>
-          <path class="mouth" d="M86 118 Q100 130 114 118"/>
+          <g class="face-rig">
+            <circle class="core-glow" cx="100" cy="100" r="48"/>
+            <circle class="core" cx="100" cy="100" r="38"/>
+            <path class="brow brow-l" d="M74 76 Q83 72 92 76"/>
+            <path class="brow brow-r" d="M108 76 Q117 72 126 76"/>
+            <rect class="eye eye-l" x="78" y="82" width="10" height="16" rx="3"/>
+            <rect class="eye eye-r" x="112" y="82" width="10" height="16" rx="3"/>
+            <path class="mouth" d="M86 110 Q100 116 114 110"/>
+          </g>
         </svg>
         <div class="visor-label" id="state">idle</div>
       </div>
@@ -65,6 +70,7 @@
     <div class="card">
       <div class="actions">
         <button id="start" type="button">Start</button>
+        <button id="restart" class="ghost" type="button">Restart</button>
         <button id="stop" class="stop" type="button">Stop</button>
         <button id="clip" class="ghost" type="button">Clip 30s</button>
         <button id="snap" class="ghost" type="button">Take photo</button>
@@ -79,6 +85,7 @@
       <div class="log" id="log">Waiting…</div>
     </div>
   </div>
+  <script src="/visor.js?v=2"></script>
   <script>
     const $ = (id) => document.getElementById(id);
     const pills = $("pills");
@@ -95,22 +102,51 @@
       document.body.classList.remove("is-idle", "is-listening", "is-thinking", "is-speaking");
       document.body.classList.add("is-" + next);
       $("state").textContent = next;
+      if (window.JarvisVisor) window.JarvisVisor.setState(next);
     }
 
     function setBusy(on) {
-      ["start", "stop", "snap", "clip"].forEach((id) => { $(id).disabled = on; });
+      ["start", "stop", "restart", "snap", "clip"].forEach((id) => { $(id).disabled = on; });
+    }
+
+    function applyRunButtons(data) {
+      const services = data.services || {};
+      const anyUp = Object.values(services).some(Boolean);
+      const voice = !!data.voice;
+      $("start").disabled = voice;
+      $("stop").disabled = !anyUp;
+      $("restart").disabled = !anyUp;
     }
 
     function renderStatus(data) {
-      if (data.state) setState(data.state);
+      const services = data.services || {};
+      const names = ["brain", "tts", "stt", "mic-wakeword", "clipper"];
+      const down = names.filter((n) => !services[n]);
+      const banner = $("run-banner");
+      if (data.voice) {
+        banner.textContent = "Running";
+        banner.className = "run-banner on";
+        if (data.state) setState(data.state);
+      } else if (down.length === names.length) {
+        banner.textContent = "Stopped";
+        banner.className = "run-banner off";
+        setState("idle");
+        $("state").textContent = "stopped";
+      } else {
+        const label = down.map((n) => (n === "mic-wakeword" ? "wake" : n)).join(", ");
+        banner.textContent = "Partial — " + label + " down";
+        banner.className = "run-banner partial";
+        if (data.state) setState(data.state);
+      }
+      applyRunButtons(data);
       const items = [
         ["voice", data.voice],
         ["broker", data.broker],
-        ["brain", data.services && data.services.brain],
-        ["tts", data.services && data.services.tts],
-        ["stt", data.services && data.services.stt],
-        ["wake", data.services && data.services["mic-wakeword"]],
-        ["clipper", data.services && data.services.clipper],
+        ["brain", services.brain],
+        ["tts", services.tts],
+        ["stt", services.stt],
+        ["wake", services["mic-wakeword"]],
+        ["clipper", services.clipper],
       ];
       pills.innerHTML = items.map(([name, on]) =>
         `<span class="pill ${on ? "on" : "off"}">${name}</span>`
@@ -121,6 +157,10 @@
       }
       pinCard.hidden = !data.pin_required;
       if (typeof data.mic_relay === "boolean") micRelay = data.mic_relay;
+      if (typeof data.this_host === "boolean") {
+        applyHostPolicy(data.this_host);
+        if (!data.this_host) maybeAutostart();
+      }
     }
 
     // ── transcript ────────────────────────────────────────────────
@@ -234,6 +274,7 @@
     }
 
     $("start").onclick = () => act("/api/start", "Starting");
+    $("restart").onclick = () => act("/api/restart", "Restarting");
     $("stop").onclick = () => act("/api/stop", "Stopping");
     $("snap").onclick = () => act("/api/snap", "Capturing");
     $("clip").onclick = () => act("/api/clip", "Clipping", { seconds: 30 });
@@ -484,11 +525,18 @@
       releaseMic();
     }
 
-    const onJarvisBox = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+    let onJarvisBox = location.hostname === "localhost" || location.hostname === "127.0.0.1";
     const LISTEN_KEY = "jarvis-listen-here";
-    if (onJarvisBox && canRecord) {
-      talkMsg.textContent = "Room mic is already always on. Use this on your phone.";
+
+    function applyHostPolicy(isBox) {
+      onJarvisBox = !!isBox;
+      if (!onJarvisBox || !canRecord) return;
+      if (listening || starting) stopAlwaysListen();
+      talkBtn.disabled = true;
+      talkBtn.textContent = "Use your phone";
+      talkMsg.textContent = "Room mic is already always on. Open this page on your phone to talk from there.";
     }
+    if (onJarvisBox && canRecord) applyHostPolicy(true);
 
     let clickLockUntil = 0;
     talkBtn.addEventListener("click", () => {
@@ -513,8 +561,10 @@
       if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
     });
 
+    let autostartTried = false;
     async function maybeAutostart() {
-      if (!canRecord || onJarvisBox) return;
+      if (autostartTried || !canRecord || onJarvisBox) return;
+      autostartTried = true;
       let want = false;
       try { want = localStorage.getItem(LISTEN_KEY) === "1"; } catch (_) {}
       if (!want) return;
@@ -527,7 +577,6 @@
       }
       if (granted) startAlwaysListen();
     }
-    maybeAutostart();
 
     // ── live feed ─────────────────────────────────────────────────
     const es = new EventSource("/api/events");

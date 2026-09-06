@@ -69,7 +69,35 @@ h1 {
 .pill.on { color: var(--good); border-color: #3dff9a; }
 .pill.off { color: var(--bad); border-color: #ff5d6c; }
 
-.actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.run-banner {
+  text-align: center;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 10px 12px;
+  border-radius: 14px;
+  margin-bottom: 14px;
+  border: 1px solid var(--line);
+}
+.run-banner.on {
+  color: var(--good);
+  border-color: #3dff9a;
+  background: rgba(61, 255, 154, 0.1);
+}
+.run-banner.off {
+  color: var(--bad);
+  border-color: #ff5d6c;
+  background: rgba(255, 93, 108, 0.1);
+}
+.run-banner.partial {
+  color: var(--warn);
+  border-color: #ffc14d;
+  background: rgba(255, 193, 77, 0.1);
+}
+
+.actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.actions #clip { grid-column: 1 / 2; }
+.actions #snap { grid-column: 2 / 4; }
 button, .btn {
   appearance: none;
   -webkit-appearance: none;
@@ -230,19 +258,26 @@ input[type="password"], input[type="text"] {
   opacity: 0.5;
   animation: spin 22s linear infinite;
 }
-.ring-dash, .core, .mouth {
+.ring-dash, .core, .mouth, .eye, .brow, .face-rig {
   transform-box: fill-box;
   transform-origin: center;
 }
 .core-glow { fill: currentColor; opacity: 0.28; }
 .core { fill: #c8f7ff; }
-.eye { fill: #071018; }
+.eye { fill: #071018; animation: blink 8.5s ease-in-out infinite; }
+.brow {
+  fill: none;
+  stroke: #071018;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
 .mouth {
   fill: none;
   stroke: #071018;
   stroke-width: 3;
   stroke-linecap: round;
 }
+.face-rig { animation: breathe 4.6s ease-in-out infinite; }
 
 body.avatar-page .visor {
   width: min(88vw, 520px);
@@ -251,11 +286,12 @@ body.avatar-page .visor {
 body.is-listening { --accent: var(--listening); }
 body.is-thinking { --accent: var(--thinking); }
 body.is-speaking { --accent: var(--speaking); }
-body.is-speaking .core { animation: pulse 0.45s ease-in-out infinite; }
-body.is-speaking .mouth { animation: talk 0.22s ease-in-out infinite; }
-body.is-speaking .core-glow { opacity: 0.5; }
-body.is-listening .core { transform: scale(1.06); }
-body.is-thinking .ring-dash { animation-duration: 4s; }
+body.is-speaking .core-glow { opacity: 0.42; }
+body.is-speaking .mouth { animation: talk-soft 0.36s ease-in-out infinite; }
+body.is-listening .brow { transform: translateY(-1px); }
+body.is-thinking .ring-dash { animation-duration: 8s; }
+body.is-thinking .brow-l { transform: rotate(-8deg); }
+body.is-thinking .brow-r { transform: rotate(6deg) translateY(-1px); }
 
 .character {
   width: 70%;
@@ -274,11 +310,15 @@ body.is-thinking .ring-dash { animation-duration: 4s; }
   font-size: 0.8rem;
 }
 
-@keyframes pulse {
-  50% { transform: scale(1.12); }
+@keyframes blink {
+  0%, 96%, 100% { transform: scaleY(1); }
+  97.5% { transform: scaleY(0.1); }
 }
-@keyframes talk {
-  50% { transform: scaleY(1.8); }
+@keyframes breathe {
+  50% { transform: translateY(-1px); }
+}
+@keyframes talk-soft {
+  50% { transform: scaleY(1.35); }
 }
 @keyframes spin {
   to { transform: rotate(360deg); }

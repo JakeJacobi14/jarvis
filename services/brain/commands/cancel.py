@@ -5,17 +5,18 @@ import re
 
 from commands.base import Command, CommandResult
 
-# "nevermind", "forget it", "shut up", "stop talking", etc.
+# "nevermind", "forget it", "shut up", "stop talking", "stop listening", etc.
 _CANCEL = re.compile(
     r"""
     (?:^|.*?\b)
     (?:
-        never\s*mind |
+        never\s*min[dg]e? |
         forget\s+(?:it|that|what\s+i\s+said) |
-        cancel\s+(?:that|it)? |
+        cancel(?:\s+(?:that|it))? |
         scratch\s+that |
         shut\s+up |
         stop\s+talking |
+        stop\s+listen(?:ing)? |
         be\s+quiet |
         quiet\s+down |
         silence
@@ -27,9 +28,9 @@ _CANCEL = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
-# Mid-utterance abort: "how tall is the… nevermind"
+# Mid-utterance abort: "how tall is the… nevermind" / "nevermind stop listening"
 _EMBEDDED_NEVERMIND = re.compile(
-    r"\b(?:never\s*mind|forget\s+it|scratch\s+that)\b",
+    r"\b(?:never\s*min[dg]e?|forget\s+it|scratch\s+that)\b",
     re.IGNORECASE,
 )
 
@@ -42,5 +43,5 @@ class CancelCommand(Command):
         if not raw:
             return None
         if _CANCEL.search(raw) or _EMBEDDED_NEVERMIND.search(raw):
-            return CommandResult(label=self.name, silent=True)
+            return CommandResult(label=self.name, silent=True, skip_followup=True)
         return None

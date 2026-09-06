@@ -139,6 +139,7 @@ def _apply_wled(
     brightness: int | None,
     warmth: int | None = None,
     warmth_delta: int | None = None,
+    brightness_delta: int | None = None,
     kelvin: int | None = None,
 ) -> str:
     if kelvin is not None:
@@ -147,6 +148,13 @@ def _apply_wled(
         warmth = int(round((max(lo, min(hi, kelvin)) - lo) * 100 / max(1, hi - lo)))
     if warmth_delta:
         warmth = max(0, min(100, 50 + int(warmth_delta)))
+    if brightness_delta:
+        try:
+            state = _wled_get()
+            bri = int(state.get("bri") or 128)
+            brightness = max(1, min(100, round(bri * 100 / 255) + int(brightness_delta)))
+        except LightsError:
+            brightness = max(1, min(100, 50 + int(brightness_delta)))
 
     if action == "status":
         state = _wled_get()
@@ -243,6 +251,7 @@ def apply(
     brightness: int | None = None,
     warmth: int | None = None,
     warmth_delta: int | None = None,
+    brightness_delta: int | None = None,
     kelvin: int | None = None,
 ) -> str:
     if _wled_base():
@@ -253,6 +262,7 @@ def apply(
                 brightness=brightness,
                 warmth=warmth,
                 warmth_delta=warmth_delta,
+                brightness_delta=brightness_delta,
                 kelvin=kelvin,
             )
         except LightsError:
@@ -266,6 +276,7 @@ def apply(
             brightness=brightness,
             warmth=warmth,
             warmth_delta=warmth_delta,
+            brightness_delta=brightness_delta,
             kelvin=kelvin,
         )
     if _ha():

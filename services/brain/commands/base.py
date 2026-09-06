@@ -25,6 +25,8 @@ class CommandResult:
     - spotify_query: search Spotify and play that track.
     - spotify_action: pause | resume | next | previous.
     - silent: handle with no spoken reply (cancel / shut up).
+    - skip_followup: do not open the room mic again after this turn
+      (music / barge-in — follow-up would hear the speakers).
     - kind: brain-handled extra (timer, repeat).
     - payload: extra data for kind handlers.
     - label: short tag for timing logs (e.g. "search", "datetime").
@@ -37,6 +39,7 @@ class CommandResult:
     spotify_query: str | None = None
     spotify_action: str | None = None
     silent: bool = False
+    skip_followup: bool = False
     kind: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
 

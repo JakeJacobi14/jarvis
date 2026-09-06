@@ -136,14 +136,23 @@ def _input_args(*, size: str, fps: int, audio: bool) -> list[str]:
         args += ["-i", spec]
         return args
 
-    args = ["-f", "v4l2"]
+    args = ["-f", "v4l2", "-thread_queue_size", "512"]
     if fps:
         args += ["-framerate", str(fps)]
     if size:
         args += ["-video_size", size]
     args += ["-i", video]
     if audio:
-        args += ["-f", "alsa", "-i", _audio_device()]
+        adev = _audio_device()
+        # Pulse/PipeWire names share the webcam with wake/STT; raw hw:N is exclusive.
+        if (
+            adev == "default"
+            or adev.startswith("alsa_input.")
+            or adev.startswith("alsa_output.")
+        ):
+            args += ["-f", "pulse", "-thread_queue_size", "512", "-i", adev]
+        else:
+            args += ["-f", "alsa", "-thread_queue_size", "512", "-i", adev]
     return args
 
 

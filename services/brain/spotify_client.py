@@ -127,22 +127,42 @@ def _sonos_hints() -> list[str]:
         return [extra.lower()] if extra else []
 
 
+def _speech_on_sonos() -> bool:
+    """True when spoken replies go through the Amp (same speakers as music)."""
+    try:
+        return _sonos_mod().tts_enabled()
+    except Exception:
+        return False
+
+
 def _score_device(dev: dict[str, Any]) -> int:
+    """Prefer the speaker Jarvis also talks through."""
     name = (dev.get("name") or "").strip().lower()
     dtype = (dev.get("type") or "").strip().lower()
     score = 0
-    for hint in _sonos_hints():
-        if hint and name == hint:
-            score = max(score, 100)
-        elif hint and hint in name:
-            score = max(score, 80)
-    if "sonos" in name or "sonos" in dtype:
-        score = max(score, 70)
-    if "amp" in name:
-        score = max(score, 60)
     wanted = _preferred_name().lower()
-    if wanted and name == wanted:
-        score = max(score, 40)
+    if _speech_on_sonos():
+        for hint in _sonos_hints():
+            if hint and name == hint:
+                score = max(score, 100)
+            elif hint and hint in name:
+                score = max(score, 80)
+        if "sonos" in name or "sonos" in dtype:
+            score = max(score, 70)
+        if "amp" in name:
+            score = max(score, 60)
+        if wanted and name == wanted:
+            score = max(score, 40)
+    else:
+        # Speech is on this computer — keep music there too (spotifyd / Jarvis).
+        if wanted and name == wanted:
+            score = max(score, 100)
+        elif wanted and wanted in name:
+            score = max(score, 80)
+        if "jarvis" in name:
+            score = max(score, 70)
+        if dtype in {"computer", "speaker"}:
+            score = max(score, 20)
     if dev.get("is_active"):
         score += 5
     return score

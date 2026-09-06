@@ -61,6 +61,17 @@ stop_one() {
     fi
   done < <(pgrep -f "$script" 2>/dev/null || true)
 
+  if [[ "$name" == "clipper" ]]; then
+    while read -r pid; do
+      [[ -z "$pid" ]] && continue
+      local cmd
+      cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+      if [[ "$cmd" == *"$ROOT"* && "$cmd" == *"ffmpeg"* && "$cmd" == *".clipbuf"* ]]; then
+        kill_pid "$pid" "clipper-ffmpeg" && found=1
+      fi
+    done < <(pgrep -f "ffmpeg" 2>/dev/null || true)
+  fi
+
   if [[ "$found" -eq 0 ]]; then
     echo "==> No running process for $name"
   fi

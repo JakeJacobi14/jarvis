@@ -20,6 +20,15 @@ def test_cancel():
     assert _label("nevermind") == "cancel"
     assert _label("shut up") == "cancel"
     assert _label("stop talking") == "cancel"
+    assert _label("stop listening") == "cancel"
+    assert _label("nevermind stop listening") == "cancel"
+    assert _label("neverming stop listening") == "cancel"
+    assert _label("never mind, stop listening") == "cancel"
+    assert _label("cancel") == "cancel"
+    r = match_command("nevermind")
+    assert r is not None and r.silent and r.skip_followup
+    r = match_command("stop listening")
+    assert r is not None and r.silent and r.skip_followup
 
 
 def test_smalltalk():
@@ -110,6 +119,9 @@ def test_lights():
     assert _label("make the lights cooler") == "lights"
     assert _label("set warmth to 30 percent") == "lights"
     assert _label("set the lights to 2700k") == "lights"
+    assert _label("turn the lights up") == "lights"
+    assert _label("turn the lights down") == "lights"
+    assert _label("make the lights brighter") == "lights"
 
 
 def test_camera():
@@ -131,6 +143,17 @@ def test_datetime():
 def test_spotify_still_wins_play():
     r = match_command("play bohemian rhapsody")
     assert r is not None and r.spotify_query
+    assert r.skip_followup
+
+
+def test_spotify_controls():
+    r = match_command("stop the music")
+    assert r is not None and r.label == "spotify" and r.spotify_action == "pause"
+    assert r.skip_followup
+    r = match_command("pause")
+    assert r is not None and r.spotify_action == "pause"
+    r = match_command("skip")
+    assert r is not None and r.spotify_action == "next"
 
 
 def test_search_still_wins_google():

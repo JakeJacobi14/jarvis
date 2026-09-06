@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#070b14">
-  <link rel="stylesheet" href="/app.css?v=2">
+  <link rel="stylesheet" href="/app.css?v=11">
   <title>Jarvis</title>
 </head>
 <body class="avatar-page is-idle">
@@ -15,15 +15,20 @@
       <circle class="halo" cx="100" cy="100" r="88"/>
       <circle class="ring" cx="100" cy="100" r="74"/>
       <circle class="ring-dash" cx="100" cy="100" r="60"/>
-      <circle class="core-glow" cx="100" cy="100" r="30"/>
-      <circle class="core" cx="100" cy="100" r="20"/>
-      <rect class="eye" x="78" y="90" width="10" height="16" rx="3"/>
-      <rect class="eye" x="112" y="90" width="10" height="16" rx="3"/>
-      <path class="mouth" d="M86 118 Q100 130 114 118"/>
+      <g class="face-rig">
+        <circle class="core-glow" cx="100" cy="100" r="48"/>
+        <circle class="core" cx="100" cy="100" r="38"/>
+        <path class="brow brow-l" d="M74 76 Q83 72 92 76"/>
+        <path class="brow brow-r" d="M108 76 Q117 72 126 76"/>
+        <rect class="eye eye-l" x="78" y="82" width="10" height="16" rx="3"/>
+        <rect class="eye eye-r" x="112" y="82" width="10" height="16" rx="3"/>
+        <path class="mouth" d="M86 110 Q100 116 114 110"/>
+      </g>
     </svg>
     <img class="character" id="face" alt="">
     <div class="visor-label" id="label">idle</div>
   </div>
+  <script src="/visor.js?v=2"></script>
   <script>
     const face = document.getElementById("face");
     const label = document.getElementById("label");
@@ -37,6 +42,7 @@
       body.classList.remove("is-idle", "is-listening", "is-thinking", "is-speaking");
       body.classList.add("is-" + next);
       label.textContent = next;
+      if (window.JarvisVisor) window.JarvisVisor.setState(next);
       if (hasCharacter) {
         face.src = next === "speaking" && talkSrc ? talkSrc : idleSrc;
       }

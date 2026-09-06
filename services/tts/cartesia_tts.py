@@ -85,52 +85,78 @@ class CartesiaTTS:
         first_audio_at: float | None = None
         gen_cfg = {"speed": self.speed} if self.speed and self.speed != 1.0 else None
 
+        last_err: Exception | None = None
         with self._lock:
-            try:
-                ws = self._ensure_ws()
-                ctx_kwargs = dict(
-                    model_id=self.model_id,
-                    voice={"mode": "id", "id": self.voice_id},
-                    output_format={
-                        "container": "raw",
-                        "encoding": "pcm_f32le",
-                        "sample_rate": self.sample_rate,
-                    },
-                    language=self.language,
-                )
-                if gen_cfg:
-                    ctx_kwargs["generation_config"] = gen_cfg
-                ctx = ws.context(**ctx_kwargs)
-                ctx.push(text)
-                ctx.no_more_inputs()
-
-                chunks: list[np.ndarray] = []
-                sonos = None
+            for attempt in range(2):
                 try:
-                    client = _sonos()
-                    if client.tts_enabled():
-                        sonos = client
-                except Exception:
+                    ws = self._ensure_ws()
+                    ctx_kwargs = dict(
+                        model_id=self.model_id,
+                        voice={"mode": "id", "id": self.voice_id},
+                        output_format={
+                            "container": "raw",
+                            "encoding": "pcm_f32le",
+                            "sample_rate": self.sample_rate,
+                        },
+                        language=self.language,
+                    )
+                    if gen_cfg:
+                        ctx_kwargs["generation_config"] = gen_cfg
+                    ctx = ws.context(**ctx_kwargs)
+                    ctx.push(text)
+                    ctx.no_more_inputs()
+
+                    chunks: list[np.ndarray] = []
                     sonos = None
+                    want_sonos = False
+                    try:
+                        client = _sonos()
+                        want_sonos = client.tts_mode() in {"sonos", "overlay"}
+                        if client.tts_enabled():
+                            sonos = client
+                    except Exception:
+                        sonos = None
+                    if want_sonos and sonos is None:
+                        raise RuntimeError(
+                            "Sonos speech is required but no speaker was found"
+                        )
 
-                def _ingest(audio_bytes: bytes):
-                    nonlocal first_audio_at
-                    samples = np.frombuffer(audio_bytes, dtype=np.float32)
-                    if not samples.size:
-                        return
-                    if first_audio_at is None:
-                        first_audio_at = time.perf_counter()
+                    def _ingest(audio_bytes: bytes):
+                        nonlocal first_audio_at
+                        samples = np.frombuffer(audio_bytes, dtype=np.float32)
+                        if not samples.size:
+                            return
+                        if first_audio_at is None:
+                            first_audio_at = time.perf_counter()
+                        if sonos is None:
+                            stream.write(samples.reshape(-1, 1))
+                        else:
+                            chunks.append(samples.copy())
+
                     if sonos is None:
-                        stream.write(samples.reshape(-1, 1))
+                        with sd.OutputStream(
+                            samplerate=self.sample_rate,
+                            channels=1,
+                            dtype="float32",
+                        ) as stream:
+                            for response in ctx.receive():
+                                if self._stop.is_set():
+                                    break
+                                rtype = getattr(response, "type", None)
+                                if rtype == "chunk":
+                                    audio_bytes = getattr(response, "audio", None)
+                                    if audio_bytes:
+                                        _ingest(audio_bytes)
+                                elif rtype == "error":
+                                    msg = (
+                                        getattr(response, "message", None)
+                                        or getattr(response, "title", None)
+                                        or "cartesia error"
+                                    )
+                                    raise RuntimeError(msg)
+                                elif rtype == "done":
+                                    break
                     else:
-                        chunks.append(samples.copy())
-
-                if sonos is None:
-                    with sd.OutputStream(
-                        samplerate=self.sample_rate,
-                        channels=1,
-                        dtype="float32",
-                    ) as stream:
                         for response in ctx.receive():
                             if self._stop.is_set():
                                 break
@@ -148,31 +174,19 @@ class CartesiaTTS:
                                 raise RuntimeError(msg)
                             elif rtype == "done":
                                 break
-                else:
-                    stream = None  # unused; ingest buffers instead
-                    for response in ctx.receive():
-                        if self._stop.is_set():
-                            break
-                        rtype = getattr(response, "type", None)
-                        if rtype == "chunk":
-                            audio_bytes = getattr(response, "audio", None)
-                            if audio_bytes:
-                                _ingest(audio_bytes)
-                        elif rtype == "error":
-                            msg = (
-                                getattr(response, "message", None)
-                                or getattr(response, "title", None)
-                                or "cartesia error"
-                            )
-                            raise RuntimeError(msg)
-                        elif rtype == "done":
-                            break
-                    if chunks and not self._stop.is_set():
-                        sonos.play_float32(np.concatenate(chunks), self.sample_rate)
-            except Exception:
-                # Next utterance opens a fresh socket.
-                self._drop_ws()
-                raise
+                        if chunks and not self._stop.is_set():
+                            sonos.play_float32(np.concatenate(chunks), self.sample_rate)
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    self._drop_ws()
+                    idle = "idle timeout" in str(e).lower() or "1000" in str(e)
+                    if attempt == 0 and idle and not self._stop.is_set():
+                        continue
+                    raise
+            if last_err is not None:
+                raise last_err
 
         t_end = time.perf_counter()
         ttfb = (first_audio_at or t_end) - t0

@@ -34,24 +34,51 @@ try:
     import sonos_client
 
     if sonos_client.tts_mode() == "overlay":
+        if not sonos_client.tts_enabled():
+            raise RuntimeError("Sonos overlay requested but no speaker found")
         ts(f"audio → Sonos overlay on {sonos_client.player_name()!r} (music ducks)")
-    elif sonos_client.tts_enabled():
+    elif sonos_client.tts_mode() == "sonos":
+        if not sonos_client.tts_enabled():
+            raise RuntimeError("Sonos speech requested but no speaker found")
         ts(f"audio → Sonos {sonos_client.player_name()!r} (interrupts music)")
     elif sonos_client.configured():
         ts("audio → local speakers (Spotify stays on Sonos)")
     else:
         ts("audio → local speakers (no Sonos found)")
 except Exception as e:
-    ts(f"audio → local speakers ({e})")
-# Warm-up / confirm audio path
-tts.say("Loading.")
+    ts(f"Sonos audio setup failed: {e}")
+    raise
+# Warm the TTS connection only. Playing "Loading." on Sonos queues an
+# AudioClip and the next real sentence can sit ~20s before the speaker
+# even fetches the WAV.
+try:
+    if hasattr(tts, "_ensure_ws"):
+        tts._ensure_ws()
+except Exception as e:
+    ts(f"TTS warmup skipped ({e})")
 ts(f"ready in {time.perf_counter() - _t_load:.2f}s")
 
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 client.connect("localhost", 1883, keepalive=30)
+client.publish("jarvis/status/tts", "idle")
 
 speak_queue = queue.Queue()
 _interrupt = threading.Event()
+_in_say = False
+_gen = 0
+_gen_lock = threading.Lock()
+
+
+def _current_gen() -> int:
+    with _gen_lock:
+        return _gen
+
+
+def _bump_gen() -> int:
+    global _gen
+    with _gen_lock:
+        _gen += 1
+        return _gen
 
 
 def clear_queue():
@@ -63,18 +90,46 @@ def clear_queue():
             break
 
 
-def speaker_loop():
-    while True:
-        text = speak_queue.get()
-        if text is None:
-            break
+def _gather_reply(text: str, gen: int) -> str:
+    """Brain streams one sentence at a time; one Sonos clip per reply."""
+    parts = [text]
+    deadline = time.monotonic() + 0.45
+    while time.monotonic() < deadline:
         try:
-            if _interrupt.is_set():
+            nxt = speak_queue.get(timeout=max(0.02, deadline - time.monotonic()))
+        except queue.Empty:
+            break
+        if nxt is None:
+            speak_queue.put(None)
+            break
+        nxt_gen, nxt_text = nxt
+        speak_queue.task_done()
+        if nxt_gen != gen:
+            continue
+        nxt_text = (nxt_text or "").strip()
+        if nxt_text:
+            parts.append(nxt_text)
+    return " ".join(parts)
+
+
+def speaker_loop():
+    global _in_say
+    while True:
+        item = speak_queue.get()
+        if item is None:
+            break
+        gen, text = item
+        finished_ok = False
+        try:
+            if _interrupt.is_set() or gen != _current_gen():
                 continue
+            text = _gather_reply(text, gen)
             t0 = time.perf_counter()
             ts(f"speaking ← {text!r}")
             client.publish("jarvis/status/tts", "speaking")
+            _in_say = True
             synth_s, play_s = tts.say(text)
+            finished_ok = gen == _current_gen()
             ts(
                 f"spoke in {time.perf_counter() - t0:.2f}s "
                 f"(synth {synth_s:.2f}s, play {play_s:.2f}s)"
@@ -82,8 +137,11 @@ def speaker_loop():
         except Exception as e:
             ts(f"error: {e}")
         finally:
+            _in_say = False
             speak_queue.task_done()
-            if speak_queue.empty() and not _interrupt.is_set():
+            # Barge-in mid-sentence must not publish "done". A false wake
+            # *after* he finished used to steal this and skip follow-up.
+            if speak_queue.empty() and finished_ok:
                 ts("queue empty → done")
                 client.publish("jarvis/status/tts", "idle")
                 client.publish("jarvis/tts/response", "done")
@@ -92,13 +150,15 @@ def speaker_loop():
 def on_interrupt(client, userdata, msg):
     ts("interrupt — stopping speech")
     _interrupt.set()
-    clear_queue()
-    tts.interrupt()
-    try:
-        sd.stop()
-    except Exception:
-        pass
-    client.publish("jarvis/status/tts", "idle")
+    if _in_say:
+        _bump_gen()
+        clear_queue()
+        tts.interrupt()
+        try:
+            sd.stop()
+        except Exception:
+            pass
+        client.publish("jarvis/status/tts", "idle")
     _interrupt.clear()
 
 
@@ -107,7 +167,7 @@ def on_message(client, userdata, msg):
     if not text:
         return
     ts(f"queued ← {text!r}")
-    speak_queue.put(text)
+    speak_queue.put((_current_gen(), text))
 
 
 client.message_callback_add("jarvis/tts/interrupt", on_interrupt)

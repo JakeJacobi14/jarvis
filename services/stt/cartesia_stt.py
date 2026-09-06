@@ -52,6 +52,8 @@ class CartesiaSTT:
         # ~100ms blocks
         self.blocksize = max(320, self.sample_rate // 10)
         self.turn_kwargs = {}
+        self._cancel = threading.Event()
+        self._session = 0
         for env_key, arg in (
             ("CARTESIA_STT_START_THRESHOLD", "turn_start_threshold"),
             ("CARTESIA_STT_EAGER_END_THRESHOLD", "turn_eager_end_threshold"),
@@ -61,6 +63,11 @@ class CartesiaSTT:
             raw = os.environ.get(env_key, "").strip()
             if raw:
                 self.turn_kwargs[arg] = float(raw)
+
+    def cancel(self):
+        """Abort an in-progress listen_turn / listen_ptt (phone / barge-in)."""
+        self._session += 1
+        self._cancel.set()
 
     def listen_turn(
         self,
@@ -80,6 +87,8 @@ class CartesiaSTT:
         speech_started = threading.Event()
         stop_send = threading.Event()
         error_box: list[BaseException] = []
+        self._cancel.clear()
+        session = self._session
 
         with self.client.stt.auto_finalize.websocket(
             model=self.model,
@@ -140,6 +149,8 @@ class CartesiaSTT:
                 callback=audio_cb,
             ):
                 while not done.wait(0.05):
+                    if self._cancel.is_set() or self._session != session:
+                        break
                     elapsed = time.monotonic() - t0
                     if (
                         idle_timeout is not None
@@ -174,6 +185,7 @@ class CartesiaSTT:
         done = threading.Event()
         stop_send = threading.Event()
         error_box: list[BaseException] = []
+        self._cancel.clear()
 
         with self.client.stt.auto_finalize.websocket(
             model=self.model,
@@ -219,7 +231,7 @@ class CartesiaSTT:
                 callback=audio_cb,
             ):
                 while not stop_event.wait(0.05):
-                    if done.is_set():
+                    if done.is_set() or self._cancel.is_set():
                         break
                 stop_send.set()
                 try:
