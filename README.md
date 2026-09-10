@@ -323,7 +323,7 @@ The panel also subscribes to `jarvis/stt/text`, `jarvis/stt/followup`, and
 `jarvis/brain/response` to build the live transcript, and publishes to
 `jarvis/stt/text` when you speak or type from a phone.
 
-## Not done yet
+
 
 - Robust barge-in while speakers are loud (echo)
 - Live2D / Rive lip-sync (PNG pair on `/avatar` is the current 2D path)
